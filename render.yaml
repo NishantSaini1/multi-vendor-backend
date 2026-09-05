@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: starter
     region: oregon
-    branch: main
+    branch: master
     buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/v1/health/database
