@@ -1,0 +1,30 @@
+import pino from 'pino';
+import { env } from '../config/env';
+
+export const logger = pino({
+  level: env.LOG_LEVEL,
+  transport: env.isDevelopment
+    ? {
+        target: 'pino-pretty',
+        options: {
+          colorize: true,
+          translateTime: 'SYS:standard',
+          ignore: 'pid,hostname',
+        },
+      }
+    : undefined,
+  redact: {
+    paths: [
+      'req.headers.authorization',
+      'password',
+      'otp',
+      'jwt',
+      'refreshToken',
+      'token',
+      '*.password',
+      '*.otp',
+      '*.refreshToken',
+    ],
+    censor: '[REDACTED]',
+  },
+});

@@ -1,0 +1,62 @@
+export const BUSINESS_TYPES = {
+  FOOD: 'FOOD',
+  INSTAMART: 'INSTAMART',
+} as const;
+
+export type BusinessType = (typeof BUSINESS_TYPES)[keyof typeof BUSINESS_TYPES];
+
+export const FOOD_ORDER_STATUS = {
+  PENDING: 'PENDING',
+  CONFIRMED: 'CONFIRMED',
+  PREPARING: 'PREPARING',
+  READY_FOR_PICKUP: 'READY_FOR_PICKUP',
+  PARTNER_ASSIGNED: 'PARTNER_ASSIGNED',
+  PICKED_UP: 'PICKED_UP',
+  OUT_FOR_DELIVERY: 'OUT_FOR_DELIVERY',
+  DELIVERED: 'DELIVERED',
+  CANCELLED: 'CANCELLED',
+} as const;
+
+export const INSTAMART_ORDER_STATUS = {
+  PENDING: 'PENDING',
+  CONFIRMED: 'CONFIRMED',
+  PACKING: 'PACKING',
+  READY_FOR_PICKUP: 'READY_FOR_PICKUP',
+  PARTNER_ASSIGNED: 'PARTNER_ASSIGNED',
+  PICKED_UP: 'PICKED_UP',
+  OUT_FOR_DELIVERY: 'OUT_FOR_DELIVERY',
+  DELIVERED: 'DELIVERED',
+  CANCELLED: 'CANCELLED',
+} as const;
+
+export const ORDER_STATUS_VALUES = Array.from(
+  new Set([...Object.values(FOOD_ORDER_STATUS), ...Object.values(INSTAMART_ORDER_STATUS)]),
+);
+
+export type OrderStatus = (typeof ORDER_STATUS_VALUES)[number];
+
+// Valid forward transitions per business type. Cancellation is allowed from any
+// pre-pickup state and is handled separately by the cancellation service.
+export const FOOD_ORDER_TRANSITIONS: Record<string, string[]> = {
+  PENDING: ['CONFIRMED', 'CANCELLED'],
+  CONFIRMED: ['PREPARING', 'CANCELLED'],
+  PREPARING: ['READY_FOR_PICKUP', 'CANCELLED'],
+  READY_FOR_PICKUP: ['PARTNER_ASSIGNED'],
+  PARTNER_ASSIGNED: ['PICKED_UP'],
+  PICKED_UP: ['OUT_FOR_DELIVERY'],
+  OUT_FOR_DELIVERY: ['DELIVERED'],
+  DELIVERED: [],
+  CANCELLED: [],
+};
+
+export const INSTAMART_ORDER_TRANSITIONS: Record<string, string[]> = {
+  PENDING: ['CONFIRMED', 'CANCELLED'],
+  CONFIRMED: ['PACKING', 'CANCELLED'],
+  PACKING: ['READY_FOR_PICKUP', 'CANCELLED'],
+  READY_FOR_PICKUP: ['PARTNER_ASSIGNED'],
+  PARTNER_ASSIGNED: ['PICKED_UP'],
+  PICKED_UP: ['OUT_FOR_DELIVERY'],
+  OUT_FOR_DELIVERY: ['DELIVERED'],
+  DELIVERED: [],
+  CANCELLED: [],
+};
