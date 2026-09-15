@@ -4,7 +4,7 @@ import { sendSuccess, buildPagination } from '../utils/ApiResponse';
 import { parsePagination } from '../utils/pagination';
 import { ApiError } from '../utils/ApiError';
 import { locationScopeFilter } from '../middleware/rbac.middleware';
-import { VENDOR_STATUS, APPROVAL_STATUS } from '../constants/enums';
+import { VENDOR_STATUS, APPROVAL_STATUS, GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 import * as vendorService from '../services/vendor.service';
 import { IVendor } from '../models/Vendor';
 
@@ -117,8 +117,19 @@ export const dashboard = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const products = catchAsync(async (req: Request, res: Response) => {
+  const user = requireUser(req);
   const pagination = parsePagination(req, { createdAt: -1 });
-  const { items, total } = await vendorService.getVendorProducts(req.params.id, requireUser(req), pagination);
+
+  // A customer browsing a restaurant's menu should only ever see items the
+  // vendor still lists and currently has in stock; the vendor/admin managing
+  // the menu needs to see everything, including OUT_OF_STOCK/INACTIVE rows.
+  const filter: Record<string, unknown> = {};
+  if (user.userType === 'CUSTOMER') {
+    filter.status = GENERIC_STATUS.ACTIVE;
+    filter.availabilityStatus = VENDOR_FOOD_ITEM_AVAILABILITY.AVAILABLE;
+  }
+
+  const { items, total } = await vendorService.getVendorProducts(req.params.id, user, pagination, filter);
   sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });
 

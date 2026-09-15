@@ -176,13 +176,23 @@ export async function getVendorDashboard(id: string, user: JwtPayload) {
   };
 }
 
-export async function getVendorProducts(id: string, user: JwtPayload, pagination: PaginationParams) {
+export async function getVendorProducts(
+  id: string,
+  user: JwtPayload,
+  pagination: PaginationParams,
+  extraFilter: Record<string, unknown> = {},
+) {
   const vendor = await findVendorOrThrow(id);
   assertLocationAccess(user, requireVendorLocationId(vendor));
 
+  const query = { vendorId: id, ...extraFilter };
   const [items, total] = await Promise.all([
-    VendorFoodItem.find({ vendorId: id }).sort(pagination.sort).skip(pagination.skip).limit(pagination.limit),
-    VendorFoodItem.countDocuments({ vendorId: id }),
+    VendorFoodItem.find(query)
+      .populate('globalFoodItemId', 'name slug description images foodType categoryId subcategoryId')
+      .sort(pagination.sort)
+      .skip(pagination.skip)
+      .limit(pagination.limit),
+    VendorFoodItem.countDocuments(query),
   ]);
   return { items, total };
 }

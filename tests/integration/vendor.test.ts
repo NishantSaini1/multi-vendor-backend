@@ -5,7 +5,8 @@ import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
-import { createTestVendorType } from './helpers/foodFixtures';
+import { createTestVendorType, createOrderableFoodItem } from './helpers/foodFixtures';
+import { FoodCategory } from '../../src/models/FoodCategory';
 
 describe('Vendor admin module', () => {
   let locationA: string;
@@ -160,5 +161,63 @@ describe('Vendor admin module', () => {
   it('rejects an unauthenticated request', async () => {
     const res = await request(app).get('/api/v1/vendors');
     expect(res.status).toBe(401);
+  });
+
+  describe('GET /vendors/:id/products', () => {
+    let categoryId: string;
+    let availableItemId: string;
+    let outOfStockItemId: string;
+    let customerToken: string;
+
+    beforeAll(async () => {
+      const category = await FoodCategory.create({ name: 'Menu Test Category' });
+      categoryId = category.id;
+
+      const available = await createOrderableFoodItem(vendorId, categoryId, {
+        name: 'Tikki Burger',
+        price: 80,
+        availabilityStatus: 'AVAILABLE',
+        status: 'ACTIVE',
+      });
+      availableItemId = available.id;
+
+      const outOfStock = await createOrderableFoodItem(vendorId, categoryId, {
+        name: 'Paneer Burger',
+        price: 90,
+        availabilityStatus: 'OUT_OF_STOCK',
+        status: 'ACTIVE',
+      });
+      outOfStockItemId = outOfStock.id;
+
+      const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9811100050' });
+      const verify = await request(app)
+        .post('/api/v1/auth/customer/verify-otp')
+        .send({ phone: '9811100050', otp: sendOtp.body.data.devOtp });
+      customerToken = verify.body.data.accessToken;
+    });
+
+    it('returns every listing with the global item populated for the vendor/admin', async () => {
+      const res = await request(app)
+        .get(`/api/v1/vendors/${vendorId}/products`)
+        .set('Authorization', `Bearer ${foodAdminToken}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.data.map((item: { _id: string }) => item._id);
+      expect(ids).toEqual(expect.arrayContaining([availableItemId, outOfStockItemId]));
+      const item = res.body.data.find((i: { _id: string }) => i._id === availableItemId);
+      expect(item.globalFoodItemId.name).toBe('Tikki Burger');
+    });
+
+    it('hides out-of-stock/inactive listings from a customer but still populates the global item', async () => {
+      const res = await request(app)
+        .get(`/api/v1/vendors/${vendorId}/products`)
+        .set('Authorization', `Bearer ${customerToken}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.data.map((item: { _id: string }) => item._id);
+      expect(ids).toContain(availableItemId);
+      expect(ids).not.toContain(outOfStockItemId);
+      const item = res.body.data.find((i: { _id: string }) => i._id === availableItemId);
+      expect(item.globalFoodItemId.name).toBe('Tikki Burger');
+      expect(item.globalFoodItemId.foodType).toBe('VEG');
+    });
   });
 });

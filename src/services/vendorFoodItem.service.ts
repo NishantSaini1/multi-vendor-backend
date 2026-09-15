@@ -27,7 +27,11 @@ export async function listVendorFoodItems(
   await assertVendorAccess(vendorId, user);
   const query = { ...filter, vendorId };
   const [items, total] = await Promise.all([
-    VendorFoodItem.find(query).sort(pagination.sort).skip(pagination.skip).limit(pagination.limit),
+    VendorFoodItem.find(query)
+      .populate('globalFoodItemId', 'name slug description images foodType categoryId subcategoryId')
+      .sort(pagination.sort)
+      .skip(pagination.skip)
+      .limit(pagination.limit),
     VendorFoodItem.countDocuments(query),
   ]);
   return { items, total };
@@ -83,7 +87,9 @@ export async function findVendorFoodItemOrThrow(vendorId: string, id: string) {
 
 export async function getVendorFoodItemById(vendorId: string, id: string, user: JwtPayload) {
   await assertVendorAccess(vendorId, user);
-  return findVendorFoodItemOrThrow(vendorId, id);
+  const item = await findVendorFoodItemOrThrow(vendorId, id);
+  await item.populate('globalFoodItemId', 'name slug description images foodType categoryId subcategoryId');
+  return item;
 }
 
 export async function updateVendorFoodItem(vendorId: string, id: string, data: Record<string, unknown>, user: JwtPayload) {
