@@ -18,6 +18,13 @@ async function assertVendorAccess(vendorId: string, user: JwtPayload) {
   return vendor;
 }
 
+// The global FoodProduct fields every VendorFoodItem response embeds under
+// globalFoodItemId — a vendor's menu UI needs the item's name/images/etc. on
+// every read AND write response (list/getById/create/update/availability),
+// never just a bare id, so every function below that returns a VendorFoodItem
+// populates it the same way.
+const GLOBAL_ITEM_POPULATE_FIELDS = 'name slug description images foodType categoryId subcategoryId';
+
 export async function listVendorFoodItems(
   vendorId: string,
   filter: Record<string, unknown>,
@@ -28,7 +35,7 @@ export async function listVendorFoodItems(
   const query = { ...filter, vendorId };
   const [items, total] = await Promise.all([
     VendorFoodItem.find(query)
-      .populate('globalFoodItemId', 'name slug description images foodType categoryId subcategoryId')
+      .populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS)
       .sort(pagination.sort)
       .skip(pagination.skip)
       .limit(pagination.limit),
@@ -61,7 +68,7 @@ export async function addVendorFoodItem(
   await assertVendorHasCatalogAccess(vendorId, globalItem.categoryId.toString(), globalItem.subcategoryId?.toString());
 
   try {
-    return await VendorFoodItem.create({
+    const item = await VendorFoodItem.create({
       vendorId,
       globalFoodItemId: data.globalFoodItemId,
       price: data.price,
@@ -70,6 +77,8 @@ export async function addVendorFoodItem(
       preparationTime: data.preparationTime,
       vendorSku: data.vendorSku,
     });
+    await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
+    return item;
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && (err as { code?: number }).code === 11000) {
       throw ApiError.conflict('You already have a listing for this item', 'VENDOR_FOOD_ITEM_ALREADY_EXISTS');
@@ -88,7 +97,7 @@ export async function findVendorFoodItemOrThrow(vendorId: string, id: string) {
 export async function getVendorFoodItemById(vendorId: string, id: string, user: JwtPayload) {
   await assertVendorAccess(vendorId, user);
   const item = await findVendorFoodItemOrThrow(vendorId, id);
-  await item.populate('globalFoodItemId', 'name slug description images foodType categoryId subcategoryId');
+  await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
   return item;
 }
 
@@ -103,6 +112,7 @@ export async function updateVendorFoodItem(vendorId: string, id: string, data: R
 
   Object.assign(item, data);
   await item.save();
+  await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
   return item;
 }
 
