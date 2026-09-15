@@ -1,10 +1,10 @@
 import { Location } from '../models/Location';
-import { DeliveryZone } from '../models/DeliveryZone';
 import { Vendor } from '../models/Vendor';
 import { Store } from '../models/Store';
 import { haversineDistanceKm } from '../utils/geo';
 import { GENERIC_STATUS, VENDOR_STATUS, STORE_STATUS } from '../constants/enums';
 import { BUSINESS_TYPES, BusinessType } from '../constants/orderStatus';
+import { findMatchingZone } from './deliveryZone.service';
 
 export interface ServiceabilityResult {
   serviceable: boolean;
@@ -28,39 +28,20 @@ async function findServingLocation(latitude: number, longitude: number) {
   return nearest?.location ?? null;
 }
 
-async function findMatchingZone(locationId: string, latitude: number, longitude: number) {
-  const geoMatch = await DeliveryZone.findOne({
-    locationId,
-    status: GENERIC_STATUS.ACTIVE,
-    polygon: {
-      $geoIntersects: { $geometry: { type: 'Point', coordinates: [longitude, latitude] } },
-    },
-  });
-  if (geoMatch) return geoMatch;
-
-  const radiusZones = await DeliveryZone.find({
-    locationId,
-    status: GENERIC_STATUS.ACTIVE,
-    centerLatitude: { $exists: true },
-    centerLongitude: { $exists: true },
-    radius: { $exists: true },
-  });
-
-  let nearest: { zone: (typeof radiusZones)[number]; distanceKm: number } | null = null;
-  for (const zone of radiusZones) {
-    const distanceKm = haversineDistanceKm(latitude, longitude, zone.centerLatitude!, zone.centerLongitude!);
-    if (distanceKm <= zone.radius! && (!nearest || distanceKm < nearest.distanceKm)) {
-      nearest = { zone, distanceKm };
-    }
-  }
-  return nearest?.zone ?? null;
-}
-
-async function hasActiveBusinessPresence(locationId: string, businessType: BusinessType): Promise<boolean> {
+// FOOD (Vendor) presence stays location-wide — only INSTAMART (Store) is
+// scoped to the specific zone that was actually matched, per the
+// Location -> Zone -> Store hierarchy: a store belongs to exactly one zone,
+// so "serviceable" must mean a store exists in *that* zone, not merely
+// somewhere else in the same location.
+async function hasActiveBusinessPresence(
+  locationId: string,
+  businessType: BusinessType,
+  zoneId: string,
+): Promise<boolean> {
   if (businessType === BUSINESS_TYPES.FOOD) {
     return (await Vendor.exists({ locationId, status: VENDOR_STATUS.ACTIVE })) !== null;
   }
-  return (await Store.exists({ locationId, status: STORE_STATUS.ACTIVE })) !== null;
+  return (await Store.exists({ deliveryZoneId: zoneId, status: STORE_STATUS.ACTIVE })) !== null;
 }
 
 export async function checkServiceability(
@@ -85,7 +66,7 @@ export async function checkServiceability(
     };
   }
 
-  const hasPresence = await hasActiveBusinessPresence(location.id, businessType);
+  const hasPresence = await hasActiveBusinessPresence(location.id, businessType, zone.id);
   if (!hasPresence) {
     return {
       serviceable: false,

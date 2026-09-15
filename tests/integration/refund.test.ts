@@ -6,14 +6,13 @@ import { razorpay } from '../../src/config/razorpay';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { Payment } from '../../src/models/Payment';
 import { Order } from '../../src/models/Order';
 import { Wallet } from '../../src/models/Wallet';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 function checkoutSignature(razorpayOrderId: string, razorpayPaymentId: string) {
   return crypto.createHmac('sha256', process.env.RAZORPAY_SECRET!).update(`${razorpayOrderId}|${razorpayPaymentId}`).digest('hex');
@@ -115,7 +114,7 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
       .send({ locationId, address: '1 Refund Lane', pincode: '110066', latitude: 14, longitude: 14 });
     addressId = addressRes.body.data._id;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Refund Restaurant',
       ownerName: 'Owner',
@@ -131,17 +130,7 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
     vendorId = vendor.id;
 
     const category = await FoodCategory.create({ name: 'Refund Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({
-      locationId,
-      vendorId,
-      categoryId: category.id,
-      name: 'Refund Thali',
-      price: 100,
-      discount: 0,
-      tax: 0,
-      isAvailable: true,
-      status: 'ACTIVE',
-    });
+    const product = await createOrderableFoodItem(vendorId, category.id, { name: 'Refund Thali', price: 100 });
     productId = product.id;
   });
 
@@ -159,7 +148,7 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
     const res = await request(app)
       .post('/api/v1/refunds')
       .set('Authorization', `Bearer ${financeAdminToken}`)
-      .send({ orderId: order._id, type: 'FULL', reason: 'Customer requested a refund' });
+      .send({ orderId: order._id, type: 'FULL', reason: 'ADMIN_REFUND', reasonDetail: 'Customer requested a refund' });
     expect(res.status).toBe(201);
     expect(res.body.data.status).toBe('COMPLETED');
     expect(res.body.data.amount).toBe(125);
@@ -178,7 +167,7 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
     const res = await request(app)
       .post('/api/v1/refunds')
       .set('Authorization', `Bearer ${financeAdminToken}`)
-      .send({ orderId: order._id, type: 'FULL', reason: 'No payment collected yet' });
+      .send({ orderId: order._id, type: 'FULL', reason: 'ADMIN_REFUND', reasonDetail: 'No payment collected yet' });
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('PAYMENT_NOT_FOUND');
   });
@@ -189,7 +178,7 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
     const missingAmount = await request(app)
       .post('/api/v1/refunds')
       .set('Authorization', `Bearer ${financeAdminToken}`)
-      .send({ orderId: order._id, type: 'PARTIAL', reason: 'Partial goodwill' });
+      .send({ orderId: order._id, type: 'PARTIAL', reason: 'ADMIN_REFUND', reasonDetail: 'Partial goodwill' });
     // Caught by the validator's zod .refine(), not the service — this
     // codebase's errorHandler maps ZodError to 422, not 400.
     expect(missingAmount.status).toBe(422);
@@ -197,14 +186,14 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
     const tooMuch = await request(app)
       .post('/api/v1/refunds')
       .set('Authorization', `Bearer ${financeAdminToken}`)
-      .send({ orderId: order._id, type: 'PARTIAL', amount: 9999, reason: 'Partial goodwill' });
+      .send({ orderId: order._id, type: 'PARTIAL', amount: 9999, reason: 'ADMIN_REFUND', reasonDetail: 'Partial goodwill' });
     expect(tooMuch.status).toBe(400);
     expect(tooMuch.body.error.code).toBe('REFUND_AMOUNT_EXCEEDS_BALANCE');
 
     const ok = await request(app)
       .post('/api/v1/refunds')
       .set('Authorization', `Bearer ${financeAdminToken}`)
-      .send({ orderId: order._id, type: 'PARTIAL', amount: 50, reason: 'Partial goodwill' });
+      .send({ orderId: order._id, type: 'PARTIAL', amount: 50, reason: 'ADMIN_REFUND', reasonDetail: 'Partial goodwill' });
     expect(ok.status).toBe(201);
     expect(ok.body.data.amount).toBe(50);
 
@@ -220,7 +209,7 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
     const res = await request(app)
       .post('/api/v1/refunds')
       .set('Authorization', `Bearer ${financeAdminToken}`)
-      .send({ orderId: order._id, type: 'FULL', reason: 'Gateway refund test' });
+      .send({ orderId: order._id, type: 'FULL', reason: 'ADMIN_REFUND', reasonDetail: 'Gateway refund test' });
     expect(res.status).toBe(201);
     expect(res.body.data.razorpayRefundId).toBe('rfnd_fixture1');
     expect(razorpay.payments.refund).toHaveBeenCalledWith('pay_refund_rzp1', expect.objectContaining({ amount: 12500 }));
@@ -253,7 +242,11 @@ describe('Refunds: admin-initiated (Razorpay gateway + wallet credit) and auto-r
       .set('Authorization', `Bearer ${financeAdminToken}`)
       .query({ orderId: order._id });
     expect(refund.body.data).toHaveLength(1);
-    expect(refund.body.data[0].reason).toContain('Order cancelled');
+    // `reason` is now a fixed REFUND_REASON enum (derived from who cancelled
+    // the order — see refund.service.ts's reasonFromCancelledBy); the
+    // free-text cancel reason lands in `reasonDetail` instead.
+    expect(refund.body.data[0].reason).toBe('CUSTOMER_CANCELLED');
+    expect(refund.body.data[0].reasonDetail).toBe('Changed my mind');
   });
 
   it('does not touch payment status when cancelling an unpaid COD order', async () => {

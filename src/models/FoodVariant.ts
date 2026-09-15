@@ -1,8 +1,12 @@
 import { Schema, model, Document, Types } from 'mongoose';
+import { GENERIC_STATUS } from '../constants/enums';
 
+// A vendor-specific size/portion option (e.g. "Half"/"Full") on top of a
+// VendorFoodItem's own base price — repointed from the old FoodProduct (price
+// was vendor-owned there too) to VendorFoodItem now that price lives there.
 export interface IFoodVariant extends Document {
   _id: Types.ObjectId;
-  productId: Types.ObjectId;
+  vendorFoodItemId: Types.ObjectId;
   name: string;
   price: number;
   isDefault: boolean;
@@ -13,11 +17,11 @@ export interface IFoodVariant extends Document {
 
 const foodVariantSchema = new Schema<IFoodVariant>(
   {
-    productId: { type: Schema.Types.ObjectId, ref: 'FoodProduct', required: true, index: true },
+    vendorFoodItemId: { type: Schema.Types.ObjectId, ref: 'VendorFoodItem', required: true, index: true },
     name: { type: String, required: true },
     price: { type: Number, required: true, min: 0 },
     isDefault: { type: Boolean, default: false },
-    status: { type: String, enum: ['ACTIVE', 'INACTIVE'], default: 'ACTIVE' },
+    status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },
   },
   { timestamps: true },
 );

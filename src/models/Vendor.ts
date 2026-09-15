@@ -1,10 +1,22 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { VENDOR_STATUS, APPROVAL_STATUS } from '../constants/enums';
+import { VENDOR_STATUS, APPROVAL_STATUS, DAYS_OF_WEEK } from '../constants/enums';
 import { hidePasswordInJson } from '../utils/schemaSecurity';
 
 export interface IVendorTemporaryClosure {
   reopensAt?: Date;
   reason?: string;
+}
+
+export interface IVendorBusinessHoursDay {
+  day: string;
+  openTime?: string;
+  closeTime?: string;
+  isClosed: boolean;
+}
+
+export interface IVendorBusinessHours {
+  weeklySchedule: IVendorBusinessHoursDay[];
+  holidays: Date[];
 }
 
 export interface IVendor extends Document {
@@ -22,7 +34,10 @@ export interface IVendor extends Document {
   latitude: number;
   longitude: number;
   serviceRadius: number;
-  cuisines: string[];
+  // A vendor's specialization(s) (Multi-Cuisine, Pure Veg, Cloud Kitchen, ...)
+  // — refs the admin-managed VendorType taxonomy (see models/VendorType.ts).
+  // Replaces the earlier free-text `cuisines: string[]`.
+  vendorTypeIds: Types.ObjectId[];
   gstNumber?: string;
   fssaiNumber?: string;
   panNumber?: string;
@@ -32,9 +47,28 @@ export interface IVendor extends Document {
   approvalStatus: string;
   isOpen: boolean;
   temporaryClosure?: IVendorTemporaryClosure | null;
+  businessHours?: IVendorBusinessHours;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const vendorBusinessHoursDaySchema = new Schema<IVendorBusinessHoursDay>(
+  {
+    day: { type: String, enum: Object.values(DAYS_OF_WEEK), required: true },
+    openTime: { type: String },
+    closeTime: { type: String },
+    isClosed: { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
+const vendorBusinessHoursSchema = new Schema<IVendorBusinessHours>(
+  {
+    weeklySchedule: { type: [vendorBusinessHoursDaySchema], default: [] },
+    holidays: { type: [Date], default: [] },
+  },
+  { _id: false },
+);
 
 const vendorSchema = new Schema<IVendor>(
   {
@@ -51,7 +85,14 @@ const vendorSchema = new Schema<IVendor>(
     latitude: { type: Number, required: true },
     longitude: { type: Number, required: true },
     serviceRadius: { type: Number, default: 5 },
-    cuisines: { type: [String], default: [] },
+    vendorTypeIds: {
+      type: [{ type: Schema.Types.ObjectId, ref: 'VendorType' }],
+      required: true,
+      validate: {
+        validator: (value: Types.ObjectId[]) => Array.isArray(value) && value.length > 0,
+        message: 'At least one vendorTypeId is required',
+      },
+    },
     gstNumber: { type: String },
     fssaiNumber: { type: String },
     panNumber: { type: String },
@@ -64,6 +105,7 @@ const vendorSchema = new Schema<IVendor>(
       type: new Schema<IVendorTemporaryClosure>({ reopensAt: { type: Date }, reason: { type: String } }, { _id: false }),
       default: null,
     },
+    businessHours: { type: vendorBusinessHoursSchema },
   },
   { timestamps: true },
 );

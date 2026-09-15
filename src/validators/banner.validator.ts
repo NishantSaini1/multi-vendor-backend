@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { BANNER_PLACEMENTS, GENERIC_STATUS } from '../constants/enums';
+import { BUSINESS_TYPES } from '../constants/orderStatus';
+
+const businessType = z.enum(Object.values(BUSINESS_TYPES) as [string, ...string[]]);
 
 const objectId = z.string().length(24);
 
@@ -16,6 +19,7 @@ export const createBannerSchema = z.object({
       title: z.string().trim().min(1),
       image: z.string().trim().min(1),
       placement: z.enum(Object.values(BANNER_PLACEMENTS) as [string, ...string[]]),
+      businessType: businessType.optional(),
       locationId: objectId.optional(),
       vendorId: objectId.optional(),
       storeId: objectId.optional(),
@@ -43,6 +47,7 @@ export const updateBannerSchema = z.object({
   body: z.object({
     title: z.string().trim().min(1).optional(),
     image: z.string().trim().min(1).optional(),
+    businessType: businessType.optional(),
     linkType: z.string().optional(),
     linkValue: z.string().optional(),
     sortOrder: z.number().int().optional(),
@@ -62,6 +67,7 @@ export const listBannersQuerySchema = z.object({
     limit: z.string().optional(),
     sort: z.string().optional(),
     placement: z.enum(Object.values(BANNER_PLACEMENTS) as [string, ...string[]]).optional(),
+    businessType: businessType.optional(),
     status: z.enum(Object.values(GENERIC_STATUS) as [string, ...string[]]).optional(),
   }),
 });
@@ -69,6 +75,7 @@ export const listBannersQuerySchema = z.object({
 export const activeBannersQuerySchema = z.object({
   query: z.object({
     placement: z.enum(Object.values(BANNER_PLACEMENTS) as [string, ...string[]]),
+    businessType: businessType.optional(),
     locationId: objectId.optional(),
     vendorId: objectId.optional(),
     storeId: objectId.optional(),

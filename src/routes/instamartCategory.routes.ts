@@ -13,13 +13,21 @@ import {
 
 const router = Router();
 
-// Read access is shared with the Customer App (public catalog browsing, see
-// instamartCategoryListFilter/assertGlobalOrLocationAccess); write access
-// stays Admin-only (Store has no login of its own).
-const readAccess = authenticate('ADMIN', 'CUSTOMER');
+// Shared, admin-managed taxonomy (a marketplace of independent stores needs
+// one canonical category every store's products reference, not each store
+// inventing its own) — read is shared with Store App + Customer App (so a
+// store can browse the taxonomy to assign its products, and customers can
+// browse/filter by it); write stays Admin-only.
+const readAccess = authenticate('ADMIN', 'STORE', 'CUSTOMER');
 
 router.get('/', readAccess, requirePermission(PERMISSIONS.INSTAMART_CATALOG_VIEW), controller.list);
-router.post('/', authenticateAdmin, requirePermission(PERMISSIONS.INSTAMART_CATALOG_MANAGE), validate(createInstamartCategorySchema), controller.create);
+router.post(
+  '/',
+  authenticateAdmin,
+  requirePermission(PERMISSIONS.INSTAMART_CATALOG_MANAGE),
+  validate(createInstamartCategorySchema),
+  controller.create,
+);
 router.get(
   '/:id',
   readAccess,

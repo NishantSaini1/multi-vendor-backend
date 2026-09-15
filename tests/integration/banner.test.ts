@@ -3,9 +3,9 @@ import app from '../../src/app';
 import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
-import { Vendor } from '../../src/models/Vendor';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor } from './helpers/foodFixtures';
 
 describe('Banners: admin CRUD and the public "active banners" query', () => {
   let locationId: string;
@@ -23,7 +23,7 @@ describe('Banners: admin CRUD and the public "active banners" query', () => {
     await AdminUser.create({ name: 'Marketing', email: 'bn.marketing@example.com', password, role: 'MARKETING_ADMIN', locationIds: [] });
     marketingToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'bn.marketing@example.com', password: 'Password123' })).body.data.accessToken;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Banner Restaurant',
       ownerName: 'Owner',

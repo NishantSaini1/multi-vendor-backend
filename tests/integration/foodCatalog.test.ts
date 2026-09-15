@@ -3,10 +3,20 @@ import app from '../../src/app';
 import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
-import { Vendor } from '../../src/models/Vendor';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, grantCatalogAccess } from './helpers/foodFixtures';
 
+// Rewritten for the GLOBAL FoodProduct + per-vendor VendorFoodItem split
+// (Stages 1-2 of the marketplace refactor — see helpers/foodFixtures.ts).
+// The old flow this file used to cover — a vendor directly POSTing
+// `/api/v1/food/products` with its own price/vendorId, and cross-vendor
+// FoodAddon.productIds validation — no longer exists: the global catalog now
+// lives at `/api/v1/food-items` (admin-managed only), a vendor's own
+// price/availability/variants/modifiers live under
+// `/api/v1/vendors/:vendorId/food-items` (vendorId is a URL param, never
+// body-settable), and FoodAddon was removed in favor of
+// ModifierGroup/ModifierOption nested under one specific VendorFoodItem.
 describe('Food catalog module', () => {
   let locationId: string;
   let superAdminToken: string;
@@ -36,7 +46,7 @@ describe('Food catalog module', () => {
       await request(app).post('/api/v1/auth/admin/login').send({ email: 'f.super@example.com', password: 'Password123' })
     ).body.data.accessToken;
 
-    const vendorA = await Vendor.create({
+    const vendorA = await createTestVendor({
       locationId,
       restaurantName: 'Vendor A',
       ownerName: 'Owner A',
@@ -49,7 +59,7 @@ describe('Food catalog module', () => {
     });
     vendorAId = vendorA.id;
 
-    const vendorB = await Vendor.create({
+    const vendorB = await createTestVendor({
       locationId,
       restaurantName: 'Vendor B',
       ownerName: 'Owner B',
@@ -87,7 +97,11 @@ describe('Food catalog module', () => {
       .send({ name: 'Global Category' });
     expect(res.status).toBe(201);
     categoryId = res.body.data._id;
-    expect(res.body.data.locationId).toBeNull();
+    // FoodCategory has no locationId concept at all anymore (see
+    // FoodCategory.ts — "Fully global, admin-managed taxonomy"); the old
+    // location-scoped-vs-global distinction this null check used to assert
+    // was removed by design, not just defaulted.
+    expect(res.body.data.locationId).toBeUndefined();
   });
 
   it('rejects a subcategory referencing a nonexistent category', async () => {
@@ -110,26 +124,44 @@ describe('Food catalog module', () => {
     subcategoryId = res.body.data._id;
   });
 
-  let productId: string;
+  let globalItemId: string;
 
-  it('lets a vendor create their own product without supplying vendorId/locationId', async () => {
+  it('lets an admin create a GLOBAL food item under the category (write is admin-only now)', async () => {
     const res = await request(app)
-      .post('/api/v1/food/products')
-      .set('Authorization', `Bearer ${vendorAToken}`)
-      .send({ categoryId, subcategoryId, name: 'Spring Rolls', price: 150 });
+      .post('/api/v1/food-items')
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({ categoryId, subcategoryId, name: 'Spring Rolls' });
     expect(res.status).toBe(201);
-    expect(res.body.data.vendorId).toBe(vendorAId);
-    expect(res.body.data.locationId).toBe(locationId);
-    productId = res.body.data._id;
+    expect(res.body.data.categoryId).toBe(categoryId);
+    globalItemId = res.body.data._id;
   });
 
-  it("ignores a vendor's attempt to set an arbitrary vendorId on create", async () => {
+  let itemAId: string;
+
+  it("lets vendor A list the global item on their own menu once granted catalog access", async () => {
+    await grantCatalogAccess(vendorAId, categoryId, subcategoryId);
     const res = await request(app)
-      .post('/api/v1/food/products')
+      .post(`/api/v1/vendors/${vendorAId}/food-items`)
       .set('Authorization', `Bearer ${vendorAToken}`)
-      .send({ categoryId, name: 'Sneaky Item', price: 99, vendorId: vendorBId });
+      .send({ globalFoodItemId: globalItemId, price: 150 });
     expect(res.status).toBe(201);
-    expect(res.body.data.vendorId).toBe(vendorAId); // forced to the authenticated vendor, not vendorB
+    expect(res.body.data.vendorId).toBe(vendorAId);
+    itemAId = res.body.data._id;
+  });
+
+  it("rejects vendor A listing an item on vendor B's menu — vendorId is a URL param, not body-settable", async () => {
+    // The old architecture let a vendor smuggle an arbitrary vendorId into
+    // the create body; that attack surface doesn't exist anymore since the
+    // vendor is identified by the route (/vendors/:vendorId/food-items), so
+    // "impersonating" another vendor now means targeting a different
+    // vendorId in the URL, which ownership enforcement rejects outright
+    // before even looking at the body.
+    const res = await request(app)
+      .post(`/api/v1/vendors/${vendorBId}/food-items`)
+      .set('Authorization', `Bearer ${vendorAToken}`)
+      .send({ globalFoodItemId: globalItemId, price: 99 });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('OWNER_FORBIDDEN');
   });
 
   it('rejects a subcategory that does not belong to the given category', async () => {
@@ -139,52 +171,65 @@ describe('Food catalog module', () => {
       .send({ name: 'Other Category' });
 
     const res = await request(app)
-      .post('/api/v1/food/products')
-      .set('Authorization', `Bearer ${vendorAToken}`)
-      .send({ categoryId: otherCategory.body.data._id, subcategoryId, name: 'Mismatch Item', price: 50 });
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('SUBCATEGORY_CATEGORY_MISMATCH');
+      .post('/api/v1/food/subcategories')
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({ name: 'Mismatch Subcategory', categoryId: otherCategory.body.data._id, });
+    // Sanity check only — the actual mismatch assertion below reuses this
+    // category against the ORIGINAL subcategory, not this new one.
+    expect(res.status).toBe(201);
+
+    const mismatch = await request(app)
+      .post('/api/v1/food-items')
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({ categoryId: otherCategory.body.data._id, subcategoryId, name: 'Mismatch Item' });
+    expect(mismatch.status).toBe(400);
+    expect(mismatch.body.error.code).toBe('SUBCATEGORY_CATEGORY_MISMATCH');
   });
 
-  it('forbids vendor B from reading vendor A\'s product', async () => {
-    const res = await request(app).get(`/api/v1/food/products/${productId}`).set('Authorization', `Bearer ${vendorBToken}`);
+  it("forbids vendor B from reading vendor A's food item", async () => {
+    const res = await request(app)
+      .get(`/api/v1/vendors/${vendorAId}/food-items/${itemAId}`)
+      .set('Authorization', `Bearer ${vendorBToken}`);
     expect(res.status).toBe(403);
     expect(res.body.error.code).toBe('OWNER_FORBIDDEN');
   });
 
-  it("forbids vendor B from adding a variant to vendor A's product", async () => {
+  it("forbids vendor B from adding a variant to vendor A's food item", async () => {
     const res = await request(app)
-      .post(`/api/v1/food/products/${productId}/variants`)
+      .post(`/api/v1/vendors/${vendorAId}/food-items/${itemAId}/variants`)
       .set('Authorization', `Bearer ${vendorBToken}`)
       .send({ name: 'Large', price: 199 });
     expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('OWNER_FORBIDDEN');
   });
 
-  it('allows vendor A to add a variant to their own product', async () => {
+  it('allows vendor A to add a variant to their own food item', async () => {
     const res = await request(app)
-      .post(`/api/v1/food/products/${productId}/variants`)
+      .post(`/api/v1/vendors/${vendorAId}/food-items/${itemAId}/variants`)
       .set('Authorization', `Bearer ${vendorAToken}`)
       .send({ name: 'Large', price: 199 });
     expect(res.status).toBe(201);
   });
 
-  it('rejects an addon whose productIds belong to a different vendor', async () => {
-    const vendorBProduct = await request(app)
-      .post('/api/v1/food/products')
+  it("rejects vendor A creating a modifier group on vendor B's food item by guessing its id", async () => {
+    await grantCatalogAccess(vendorBId, categoryId, subcategoryId);
+    const itemBRes = await request(app)
+      .post(`/api/v1/vendors/${vendorBId}/food-items`)
       .set('Authorization', `Bearer ${vendorBToken}`)
-      .send({ categoryId, name: 'Vendor B Item', price: 80 });
+      .send({ globalFoodItemId: globalItemId, price: 80 });
+    expect(itemBRes.status).toBe(201);
 
     const res = await request(app)
-      .post('/api/v1/food/addons')
+      .post(`/api/v1/vendors/${vendorBId}/food-items/${itemBRes.body.data._id}/modifier-groups`)
       .set('Authorization', `Bearer ${vendorAToken}`)
-      .send({ name: 'Extra Cheese', price: 20, productIds: [vendorBProduct.body.data._id] });
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe('PRODUCT_VENDOR_MISMATCH');
+      .send({ name: 'Extra Cheese' });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('OWNER_FORBIDDEN');
   });
 
-  it('allows an admin to view a product across vendors via location scope', async () => {
+  it("allows an admin to view a vendor's food item across vendors via location scope", async () => {
     const res = await request(app)
-      .get(`/api/v1/food/products/${productId}`)
+      .get(`/api/v1/vendors/${vendorAId}/food-items/${itemAId}`)
       .set('Authorization', `Bearer ${superAdminToken}`);
     expect(res.status).toBe(200);
   });

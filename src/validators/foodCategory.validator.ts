@@ -5,10 +5,12 @@ const objectId = z.string().length(24);
 
 export const createFoodCategorySchema = z.object({
   body: z.object({
-    locationId: objectId.nullable().optional(),
     name: z.string().min(2),
+    slug: z.string().min(2).optional(),
+    description: z.string().optional(),
     image: z.string().url().optional(),
-    sortOrder: z.number().int().default(0),
+    icon: z.string().optional(),
+    displayOrder: z.number().int().default(0),
   }),
 });
 

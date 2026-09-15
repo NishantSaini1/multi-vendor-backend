@@ -14,7 +14,7 @@ import {
 
 const router = Router();
 
-const anyOrderActor = authenticate('ADMIN', 'VENDOR', 'DELIVERY_PARTNER', 'CUSTOMER');
+const anyOrderActor = authenticate('ADMIN', 'VENDOR', 'STORE', 'DELIVERY_PARTNER', 'CUSTOMER');
 
 router.get('/', anyOrderActor, requirePermission(PERMISSIONS.ORDER_VIEW), controller.list);
 router.post('/', authenticateCustomer, validate(createOrderSchema), controller.create);
@@ -22,14 +22,14 @@ router.get('/:id', anyOrderActor, requirePermission(PERMISSIONS.ORDER_VIEW), val
 router.patch('/:id', authenticateAdmin, requirePermission(PERMISSIONS.ORDER_UPDATE), validate(updateOrderSchema), controller.update);
 router.patch(
   '/:id/status',
-  authenticate('ADMIN', 'VENDOR', 'DELIVERY_PARTNER'),
+  authenticate('ADMIN', 'VENDOR', 'STORE', 'DELIVERY_PARTNER'),
   requirePermission(PERMISSIONS.ORDER_UPDATE),
   validate(updateOrderStatusSchema),
   controller.updateStatus,
 );
 router.post(
   '/:id/cancel',
-  authenticate('ADMIN', 'VENDOR', 'CUSTOMER'),
+  authenticate('ADMIN', 'VENDOR', 'STORE', 'CUSTOMER'),
   requirePermission(PERMISSIONS.ORDER_CANCEL),
   validate(cancelOrderSchema),
   controller.cancel,

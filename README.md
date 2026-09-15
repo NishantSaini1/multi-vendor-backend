@@ -113,7 +113,16 @@ Base path: `/api/v1`. Swagger UI: `/api-docs`. Health checks: `/api/v1/health`,
   - Products: admin-only CRUD, validated against the owning store's location
     and category/subcategory consistency. Creating a product transactionally
     also creates its zero-stock `Inventory` record in the same store;
-    deleting a product transactionally removes that record too
+    deleting a product transactionally removes that record (and any
+    variants) too
+  - Variants (`/instamart/products/:productId/variants`): a pack-size option
+    (e.g. "500g", "1kg", "250ml") is just a name + price on `InstamartProduct`
+    — mirrors the Food catalog's `FoodVariant` pattern rather than being its
+    own SKU/stock. It shares the parent product's `Inventory` row rather than
+    tracking its own. Once a product has any `ACTIVE` variant, ordering it
+    directly (no `variantId`) is rejected — see `prepareInstamartItems` in
+    `order.service.ts` — the customer must pick a variant, matching how
+    quick-commerce apps sell pack sizes as mutually exclusive choices
 - Inventory: `GET /inventory`, `/inventory/:id`, `/inventory/product/:id`,
   `/inventory/low-stock`, `/inventory/out-of-stock`, `/inventory/:id/history`,
   `POST /inventory/adjust` (single transaction type: PURCHASE/SALE/RETURN/

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { REFUND_STATUS, REFUND_TYPES } from '../constants/paymentStatus';
+import { REFUND_REASON } from '../constants/enums';
 
 const objectId = z.string().length(24);
 
@@ -9,7 +10,8 @@ export const createRefundSchema = z.object({
       orderId: objectId,
       type: z.enum([REFUND_TYPES.FULL, REFUND_TYPES.PARTIAL]),
       amount: z.number().positive().optional(),
-      reason: z.string().min(3),
+      reason: z.enum(Object.values(REFUND_REASON) as [string, ...string[]]),
+      reasonDetail: z.string().optional(),
     })
     .refine((data) => data.type !== REFUND_TYPES.PARTIAL || (data.amount && data.amount > 0), {
       message: 'amount is required for a PARTIAL refund',

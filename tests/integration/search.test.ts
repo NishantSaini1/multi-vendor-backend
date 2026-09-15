@@ -2,14 +2,11 @@ import request from 'supertest';
 import app from '../../src/app';
 import { redisClient } from '../../src/config/redis';
 import { Location } from '../../src/models/Location';
-import { Vendor } from '../../src/models/Vendor';
-import { Store } from '../../src/models/Store';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { InstamartCategory } from '../../src/models/InstamartCategory';
-import { InstamartProduct } from '../../src/models/InstamartProduct';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem, createTestStore, createInstamartListing } from './helpers/foodFixtures';
 
 describe('Search: cross-collection text search over vendors/products/stores', () => {
   let locationId: string;
@@ -24,7 +21,7 @@ describe('Search: cross-collection text search over vendors/products/stores', ()
     const otherLocation = await Location.create({ name: 'Other Search City', code: 'OTHERSEARCH', state: 'UP', district: 'D2', latitude: 28, longitude: 28 });
     otherLocationId = otherLocation.id;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Pizza Palace',
       ownerName: 'Owner',
@@ -37,7 +34,7 @@ describe('Search: cross-collection text search over vendors/products/stores', ()
       approvalStatus: 'APPROVED',
       isOpen: true,
     });
-    await Vendor.create({
+    await createTestVendor({
       locationId,
       restaurantName: 'Pizza Unapproved',
       ownerName: 'Owner',
@@ -52,16 +49,29 @@ describe('Search: cross-collection text search over vendors/products/stores', ()
     });
 
     const category = await FoodCategory.create({ name: 'Search Food Category', status: 'ACTIVE' });
-    await FoodProduct.create({ locationId, vendorId: vendor.id, categoryId: category.id, name: 'Margherita Pizza', isAvailable: true, status: 'ACTIVE', price: 200 });
-    await FoodProduct.create({ locationId, vendorId: vendor.id, categoryId: category.id, name: 'Unavailable Pizza', isAvailable: false, status: 'ACTIVE', price: 200 });
+    // search.service.ts matches the GLOBAL FoodProduct by text search, then
+    // joins each vendor's VendorFoodItem listing filtered by the listing's
+    // own `status` (GENERIC_STATUS) — NOT by `availabilityStatus`, which the
+    // search join never looks at. So to keep "Unavailable Pizza" out of the
+    // search results (the actual behavior under test), its VendorFoodItem
+    // listing must be `status: 'INACTIVE'` (a delisted item); `availabilityStatus:
+    // 'OUT_OF_STOCK'` is set alongside it to reflect the old isAvailable:false
+    // intent, but status is what search actually filters on.
+    await createOrderableFoodItem(vendor.id, category.id, { name: 'Margherita Pizza', price: 200 });
+    await createOrderableFoodItem(vendor.id, category.id, {
+      name: 'Unavailable Pizza',
+      price: 200,
+      availabilityStatus: 'OUT_OF_STOCK',
+      status: 'INACTIVE',
+    });
 
-    const store = await Store.create({ locationId, name: 'Pizza Mart Grocery', managerName: 'Manager', phone: '9877990020', address: 'Somewhere', latitude: 27, longitude: 27, status: 'ACTIVE' });
+    const store = await createTestStore({ locationId, name: 'Pizza Mart Grocery', managerName: 'Manager', phone: '9877990020', address: 'Somewhere', latitude: 27, longitude: 27, status: 'ACTIVE' });
     const instamartCategory = await InstamartCategory.create({ name: 'Search Instamart Category', status: 'ACTIVE' });
-    await InstamartProduct.create({ locationId, storeId: store.id, categoryId: instamartCategory.id, name: 'Frozen Pizza Base', sku: 'PZB-1', mrp: 100, sellingPrice: 90, unit: 'pc', status: 'ACTIVE' });
+    await createInstamartListing(locationId, store.id, instamartCategory.id, { name: 'Frozen Pizza Base', sku: 'PZB-1', mrp: 100, sellingPrice: 90, unit: 'pc' });
 
     // A same-named vendor in a different location should not show up when
     // searching scoped to `locationId`.
-    await Vendor.create({
+    await createTestVendor({
       locationId: otherLocationId,
       restaurantName: 'Pizza Elsewhere',
       ownerName: 'Owner',

@@ -6,11 +6,10 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 // Dedicated cross-cutting E2E coverage — the scenarios named in the
 // project's own roadmap that don't belong to any single module's test file:
@@ -29,7 +28,6 @@ describe('Cross-cutting E2E: OTP brute force, token forgery/expiry, cross-locati
   let vendorAId: string;
   let vendorBId: string;
   let vendorAToken: string;
-  let vendorBToken: string;
   let productAId: string;
   let addonBId: string;
   let customerToken: string;
@@ -60,7 +58,7 @@ describe('Cross-cutting E2E: OTP brute force, token forgery/expiry, cross-locati
     await AdminUser.create({ name: 'Scoped Admin', email: 'e2e.scoped@example.com', password, role: 'LOCATION_ADMIN', locationIds: [locationA] });
     scopedAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'e2e.scoped@example.com', password: 'Password123' })).body.data.accessToken;
 
-    const vendorA = await Vendor.create({
+    const vendorA = await createTestVendor({
       locationId: locationA,
       restaurantName: 'E2E Vendor A',
       ownerName: 'Owner A',
@@ -76,7 +74,7 @@ describe('Cross-cutting E2E: OTP brute force, token forgery/expiry, cross-locati
     vendorAId = vendorA.id;
     vendorAToken = (await request(app).post('/api/v1/auth/vendor/login').send({ identifier: '9877700301', password: 'VendorPass123' })).body.data.accessToken;
 
-    const vendorB = await Vendor.create({
+    const vendorB = await createTestVendor({
       locationId: locationB,
       restaurantName: 'E2E Vendor B',
       ownerName: 'Owner B',
@@ -90,17 +88,21 @@ describe('Cross-cutting E2E: OTP brute force, token forgery/expiry, cross-locati
       isOpen: true,
     });
     vendorBId = vendorB.id;
-    vendorBToken = (await request(app).post('/api/v1/auth/vendor/login').send({ identifier: '9877700302', password: 'VendorPass123' })).body.data.accessToken;
 
+    // The old FoodProduct was vendor-owned (price/vendorId directly on it);
+    // it's now a GLOBAL catalog item with per-vendor pricing/ownership living
+    // on VendorFoodItem instead (see helpers/foodFixtures.ts). Order lines
+    // reference the VendorFoodItem id, not the global item's.
     const category = await FoodCategory.create({ name: 'E2E Food Category', status: 'ACTIVE' });
-    const productA = await FoodProduct.create({ locationId: locationA, vendorId: vendorAId, categoryId: category.id, name: 'E2E Item A', price: 120, discount: 0, tax: 0, isAvailable: true, status: 'ACTIVE' });
+    const productA = await createOrderableFoodItem(vendorAId, category.id, { name: 'E2E Item A', price: 120 });
     productAId = productA.id;
 
-    const addonBRes = await request(app)
-      .post('/api/v1/food/addons')
-      .set('Authorization', `Bearer ${vendorBToken}`)
-      .send({ name: 'E2E Addon B', price: 10, maxQuantity: 3 });
-    addonBId = addonBRes.body.data._id;
+    // FoodAddon was removed in favor of ModifierGroup/ModifierOption nested
+    // under one specific VendorFoodItem (see vendorFoodItem.routes.ts) — the
+    // "cross-vendor authorization" scenario below now exercises that route
+    // instead of the deleted /food/addons one.
+    const productB = await createOrderableFoodItem(vendorBId, category.id, { name: 'E2E Item B', price: 60 });
+    addonBId = productB.id;
 
     const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9877700350' });
     const verify = await request(app).post('/api/v1/auth/customer/verify-otp').send({ phone: '9877700350', otp: sendOtp.body.data.devOtp });
@@ -194,9 +196,9 @@ describe('Cross-cutting E2E: OTP brute force, token forgery/expiry, cross-locati
   });
 
   describe('Cross-vendor authorization', () => {
-    it("rejects a vendor updating another vendor's addon by guessing its id", async () => {
+    it("rejects a vendor updating another vendor's food item by guessing its id", async () => {
       const res = await request(app)
-        .patch(`/api/v1/food/addons/${addonBId}`)
+        .patch(`/api/v1/vendors/${vendorBId}/food-items/${addonBId}`)
         .set('Authorization', `Bearer ${vendorAToken}`)
         .send({ price: 1 });
       expect(res.status).toBe(403);

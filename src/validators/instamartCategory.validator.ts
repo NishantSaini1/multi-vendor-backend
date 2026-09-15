@@ -8,9 +8,16 @@ export const createInstamartCategorySchema = z.object({
     locationId: objectId.nullable().optional(),
     name: z.string().min(2),
     image: z.string().url().optional(),
+    // Free-text section label for the "All Categories" screen (e.g. "Grocery
+    // & Kitchen", "Snacks & Drinks") — optional; ungrouped categories fall
+    // under a single default section client-side.
+    group: z.string().trim().min(1).max(60).optional(),
     sortOrder: z.number().int().default(0),
+    storeTypeIds: z.array(objectId).min(1),
   }),
 });
+
+
 
 export const updateInstamartCategorySchema = z.object({
   params: z.object({ id: objectId }),

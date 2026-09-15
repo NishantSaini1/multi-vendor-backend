@@ -26,6 +26,7 @@ export async function verifyCustomerOtp(phone: string, otp: string, device: Devi
   await verifyOtpChallenge(phone, otp);
 
   let customer = await Customer.findOne({ phone });
+  const isNewCustomer = !customer;
   if (!customer) {
     customer = await Customer.create({ phone, lastLoginAt: new Date() });
   } else {
@@ -39,7 +40,7 @@ export async function verifyCustomerOtp(phone: string, otp: string, device: Devi
 
   const payload: JwtPayload = { userId: customer.id, userType: 'CUSTOMER', role: 'CUSTOMER', locationIds: [] };
   const tokens = await issueTokenPair(payload, device);
-  return { customer, tokens };
+  return { customer, tokens, isNewCustomer };
 }
 
 export async function refreshCustomerTokens(refreshToken: string, device: DeviceInfo) {

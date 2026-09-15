@@ -4,16 +4,20 @@ import { InventoryTransaction } from '../models/InventoryTransaction';
 import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
-import { assertLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
+import { assertOwnerOrLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { INVENTORY_TRANSACTION_TYPES } from '../constants/enums';
 
 type InventoryDoc = mongoose.HydratedDocument<IInventory>;
 
+// Each Inventory row already carries its owning storeId directly, so a STORE
+// actor's ownership check needs no extra lookup — same pattern as
+// Food/Instamart product ownership.
 async function assertInventoryAccess(inventory: InventoryDoc, user: JwtPayload): Promise<void> {
-  assertLocationAccess(user, inventory.locationId.toString());
+  assertOwnerOrLocationAccess(user, inventory.storeId.toString(), inventory.locationId.toString());
 }
 
 export function inventoryListFilter(user: JwtPayload): Record<string, unknown> {
+  if (user.userType === 'STORE') return { storeId: user.userId };
   return locationScopeFilter(user);
 }
 
@@ -34,10 +38,19 @@ export async function getInventoryById(id: string, user: JwtPayload) {
 
 export async function getInventoryByProduct(productId: string, user: JwtPayload) {
   const records = await Inventory.find({ productId });
+  // A product can (rarely) have inventory rows at more than one store; filter
+  // to what this caller can actually see rather than erroring the whole
+  // request over a sibling store's row.
+  const accessible: InventoryDoc[] = [];
   for (const record of records) {
-    await assertInventoryAccess(record, user);
+    try {
+      await assertInventoryAccess(record, user);
+      accessible.push(record);
+    } catch {
+      // not accessible to this caller — omit rather than throw
+    }
   }
-  return records;
+  return accessible;
 }
 
 export async function getInventoryHistory(id: string, user: JwtPayload, pagination: PaginationParams) {

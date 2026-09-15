@@ -22,6 +22,11 @@ export interface IDelivery extends Document {
   deliveredAt?: Date;
   estimatedTime?: number;
   distance?: number;
+  // Snapshotted at assignment time (assignDeliveryPartner) from the order's
+  // own deliveryFee — see delivery.service.ts. partnerEarning is deliveryFee
+  // net of the platform's delivery margin (env.PLATFORM_DELIVERY_MARGIN_PERCENT).
+  deliveryFee?: number;
+  partnerEarning?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -50,6 +55,8 @@ const deliverySchema = new Schema<IDelivery>(
     deliveredAt: { type: Date },
     estimatedTime: { type: Number },
     distance: { type: Number },
+    deliveryFee: { type: Number, min: 0 },
+    partnerEarning: { type: Number, min: 0 },
   },
   { timestamps: true },
 );

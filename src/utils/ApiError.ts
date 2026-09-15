@@ -30,7 +30,7 @@ export class ApiError extends Error {
   }
 
   static conflict(message: string, code = 'CONFLICT') {
-    return new ApiError(499, message, code);
+    return new ApiError(409, message, code);
   }
 
   static unprocessable(message: string, code = 'UNPROCESSABLE_ENTITY', details?: unknown) {

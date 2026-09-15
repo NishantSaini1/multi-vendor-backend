@@ -6,9 +6,9 @@ import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
 import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 describe('Reviews: eligibility, target validation, moderation, and rating aggregation', () => {
   let locationId: string;
@@ -54,7 +54,7 @@ describe('Reviews: eligibility, target validation, moderation, and rating aggreg
     const createRes = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId: forAddressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId: forAddressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
     const orderId = createRes.body.data._id;
 
     // Vendor moves it through the pre-pickup pipeline.
@@ -105,7 +105,7 @@ describe('Reviews: eligibility, target validation, moderation, and rating aggreg
     supportToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'rv.support@example.com', password: 'Password123' })).body.data.accessToken;
     foodAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'rv.food@example.com', password: 'Password123' })).body.data.accessToken;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Review Restaurant',
       ownerName: 'Owner',
@@ -121,7 +121,7 @@ describe('Reviews: eligibility, target validation, moderation, and rating aggreg
     vendorId = vendor.id;
 
     const category = await FoodCategory.create({ name: 'Review Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({ locationId, vendorId, categoryId: category.id, name: 'Review Thali', price: 150, isAvailable: true, status: 'ACTIVE' });
+    const product = await createOrderableFoodItem(vendorId, category.id, { name: 'Review Thali', price: 150 });
     productId = product.id;
 
     const custA = await newCustomerWithAddress('9877000050');
@@ -143,7 +143,7 @@ describe('Reviews: eligibility, target validation, moderation, and rating aggreg
     const createRes = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerAToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId: addressAId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId: addressAId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
 
     const res = await request(app)
       .post('/api/v1/reviews')

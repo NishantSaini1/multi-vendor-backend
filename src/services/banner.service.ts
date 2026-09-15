@@ -48,7 +48,13 @@ export async function updateBannerStatus(id: string, status: string) {
 // locationId set) still shows everywhere, mirroring Offer's "empty scope
 // array means everywhere" convention even though here it's a single
 // optional field rather than an array.
-export async function listActiveBanners(filter: { placement: string; locationId?: string; vendorId?: string; storeId?: string }) {
+export async function listActiveBanners(filter: {
+  placement: string;
+  businessType?: string;
+  locationId?: string;
+  vendorId?: string;
+  storeId?: string;
+}) {
   const now = new Date();
   const clauses: Record<string, unknown>[] = [
     { placement: filter.placement },
@@ -59,6 +65,7 @@ export async function listActiveBanners(filter: { placement: string; locationId?
   if (filter.vendorId) clauses.push({ vendorId: filter.vendorId });
   if (filter.storeId) clauses.push({ storeId: filter.storeId });
   if (filter.locationId) clauses.push({ $or: [{ locationId: { $exists: false } }, { locationId: filter.locationId }] });
+  if (filter.businessType) clauses.push({ $or: [{ businessType: { $exists: false } }, { businessType: filter.businessType }] });
 
   return Banner.find({ $and: clauses }).sort({ sortOrder: 1, createdAt: -1 });
 }

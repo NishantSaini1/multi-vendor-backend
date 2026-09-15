@@ -14,8 +14,12 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   const user = requireUser(req);
   const pagination = parsePagination(req, { sortOrder: 1 });
 
-  const filter: Record<string, unknown> = instamartCategoryService.instamartCategoryListFilter(user);
-  if (req.query.locationId) filter.locationId = req.query.locationId;
+  const filter: Record<string, unknown> = await instamartCategoryService.instamartCategoryListFilter(user);
+  // CUSTOMER/STORE intentionally get no location scoping (they browse the
+  // shared, global taxonomy) — never let a locationId query param narrow that.
+  if (req.query.locationId && user.userType !== 'CUSTOMER' && user.userType !== 'STORE') {
+    filter.locationId = req.query.locationId;
+  }
   if (req.query.status) filter.status = req.query.status;
 
   const { items, total } = await instamartCategoryService.listInstamartCategories(filter, pagination, user);

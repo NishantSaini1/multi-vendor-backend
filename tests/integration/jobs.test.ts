@@ -5,6 +5,8 @@ import { Order } from '../../src/models/Order';
 import { Notification } from '../../src/models/Notification';
 import { NotificationDevice } from '../../src/models/NotificationDevice';
 import { Settlement } from '../../src/models/Settlement';
+import { Transaction } from '../../src/models/Transaction';
+import { DeliveryPartner } from '../../src/models/DeliveryPartner';
 import { runOrderTimeoutSweep } from '../../src/jobs/orderTimeout.job';
 import { runNotificationRetry } from '../../src/jobs/notificationRetry.job';
 import { runDailySettlementGeneration } from '../../src/jobs/settlementGeneration.job';
@@ -135,8 +137,10 @@ describe('Background jobs: order timeout sweep, notification retry, daily settle
       yesterday.setDate(yesterday.getDate() - 1);
       yesterday.setHours(12, 0, 0, 0);
 
+      const vendorId = new mongoose.Types.ObjectId();
       const deliveryPartnerId = new mongoose.Types.ObjectId();
       const order = await insertOrder({
+        vendorId,
         status: 'DELIVERED',
         deliveryPartnerId,
         subtotal: 500,
@@ -144,6 +148,38 @@ describe('Background jobs: order timeout sweep, notification retry, daily settle
         deliveryFee: 20,
         createdAt: yesterday,
         updatedAt: yesterday,
+      });
+
+      // Settlement generation sources from the ledger (Transaction rows),
+      // not a live Order query — see settlement.service.ts's
+      // buildVendorOrStoreGroups/buildDeliveryPartnerGroups. A real DELIVERED
+      // transition writes these via ledger.service.ts's
+      // recordOrderCommissionLedger (VENDOR_COMMISSION) and
+      // delivery.service.ts (DELIVERY_EARNING); this test creates the order
+      // already-DELIVERED directly (bypassing that transition), so it must
+      // seed the same ledger rows itself to exercise generation.
+      await DeliveryPartner.create({
+        _id: deliveryPartnerId,
+        locationId,
+        name: 'Settlement Partner',
+        phone: `98776${Math.floor(10000 + Math.random() * 89999)}`,
+        password: 'not-a-real-hash',
+      });
+      await Transaction.create({
+        orderId: order._id,
+        vendorId,
+        type: 'VENDOR_COMMISSION',
+        amount: 50,
+        direction: 'DEBIT',
+        createdAt: yesterday,
+      });
+      await Transaction.create({
+        orderId: order._id,
+        deliveryPartnerId,
+        type: 'DELIVERY_EARNING',
+        amount: 20,
+        direction: 'CREDIT',
+        createdAt: yesterday,
       });
 
       await runDailySettlementGeneration();

@@ -1,63 +1,113 @@
 import { Settlement, ISettlement, SETTLEMENT_PAYEE_TYPES } from '../models/Settlement';
 import { Order } from '../models/Order';
+import { DeliveryPartner } from '../models/DeliveryPartner';
+import { Transaction } from '../models/Transaction';
 import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
-import { assertLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
+import { assertLocationAccess, hasLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { SETTLEMENT_STATUS } from '../constants/paymentStatus';
-import { DISCOUNT_TYPES, NOTIFICATION_TYPES } from '../constants/enums';
-import * as commissionService from './commission.service';
+import { NOTIFICATION_TYPES, TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
+import * as ledgerService from './ledger.service';
 import * as notificationService from './notification.service';
 
-interface LeanOrderForSettlement {
-  _id: unknown;
-  locationId: { toString(): string };
-  vendorId?: { toString(): string };
-  storeId?: { toString(): string };
-  deliveryPartnerId?: { toString(): string };
-  businessType: string;
-  subtotal: number;
-  discount: number;
-  deliveryFee: number;
+interface PayeeGroup {
+  locationId: string;
+  orderIds: string[];
+  grossAmount: number;
+  commissionAmount: number;
 }
 
-const PAYEE_FIELD: Record<string, 'vendorId' | 'storeId' | 'deliveryPartnerId'> = {
-  [SETTLEMENT_PAYEE_TYPES.VENDOR]: 'vendorId',
-  [SETTLEMENT_PAYEE_TYPES.STORE]: 'storeId',
-  [SETTLEMENT_PAYEE_TYPES.DELIVERY_PARTNER]: 'deliveryPartnerId',
-};
+// Sources a VENDOR/STORE settlement group from the ledger's VENDOR_COMMISSION
+// rows (written once, at order-DELIVERED time — see
+// ledger.service.ts's recordOrderCommissionLedger) rather than resolving
+// commission fresh here — a historical settlement must always reflect what
+// was actually snapshotted on the order, not today's Commission config. The
+// commission amount comes straight from the ledger; gross (subtotal -
+// discount, the same base the snapshot itself used) still needs a lookup on
+// the handful of orders the ledger identified, not a live re-query by
+// status/date.
+async function buildVendorOrStoreGroups(
+  payeeType: string,
+  periodStart: Date,
+  periodEnd: Date,
+): Promise<Map<string, PayeeGroup>> {
+  const payeeField = payeeType === SETTLEMENT_PAYEE_TYPES.VENDOR ? 'vendorId' : 'storeId';
 
-// What counts as a payee's "gross" earnings for a settled order — a
-// documented judgment call (the spec doesn't pin down the split): vendors
-// and stores earn the item revenue (subtotal - discount), not the delivery
-// fee (that's the delivery partner's) or tax/platform fee (pass-through /
-// platform's own). Delivery partners earn the order's delivery fee outright.
-function grossForOrder(payeeType: string, order: LeanOrderForSettlement): number {
-  return payeeType === SETTLEMENT_PAYEE_TYPES.DELIVERY_PARTNER ? order.deliveryFee : order.subtotal - order.discount;
+  const commissionRows = await Transaction.find({
+    type: TRANSACTION_TYPE.VENDOR_COMMISSION,
+    [payeeField]: { $exists: true, $ne: null },
+    createdAt: { $gte: periodStart, $lt: periodEnd },
+  });
+
+  const rowGroups = new Map<string, { orderIds: Set<string>; commissionAmount: number }>();
+  for (const row of commissionRows) {
+    const payeeId = (row as unknown as Record<string, { toString(): string } | undefined>)[payeeField]?.toString();
+    if (!payeeId || !row.orderId) continue;
+    let group = rowGroups.get(payeeId);
+    if (!group) {
+      group = { orderIds: new Set(), commissionAmount: 0 };
+      rowGroups.set(payeeId, group);
+    }
+    group.orderIds.add(row.orderId.toString());
+    group.commissionAmount += row.amount;
+  }
+
+  const result = new Map<string, PayeeGroup>();
+  for (const [payeeId, group] of rowGroups) {
+    const orderIds = [...group.orderIds];
+    const orders = await Order.find({ _id: { $in: orderIds } }).select('locationId subtotal discount');
+    if (orders.length === 0) continue;
+    const grossAmount = orders.reduce((sum, o) => sum + (o.subtotal - o.discount), 0);
+    result.set(payeeId, {
+      locationId: orders[0].locationId.toString(),
+      orderIds,
+      grossAmount,
+      commissionAmount: group.commissionAmount,
+    });
+  }
+  return result;
 }
 
 // Delivery partners have no Commission entity of their own (COMMISSION_LEVELS
-// has no DELIVERY_PARTNER level) — under this scaffold they keep 100% of the
-// delivery fees they earn; a platform cut on deliveries, if ever needed, is
-// a separate future decision rather than something to invent here.
-async function commissionForGroup(
-  payeeType: string,
-  payeeId: string,
-  group: LeanOrderForSettlement[],
-): Promise<number> {
-  if (payeeType === SETTLEMENT_PAYEE_TYPES.DELIVERY_PARTNER) return 0;
-
-  const grossAmount = group.reduce((sum, o) => sum + grossForOrder(payeeType, o), 0);
-  const first = group[0];
-  const commission = await commissionService.resolveCommission({
-    locationId: first.locationId.toString(),
-    vendorId: payeeType === SETTLEMENT_PAYEE_TYPES.VENDOR ? payeeId : undefined,
-    storeId: payeeType === SETTLEMENT_PAYEE_TYPES.STORE ? payeeId : undefined,
-    businessType: first.businessType,
+// has no DELIVERY_PARTNER level) — they keep 100% of the DELIVERY_EARNING
+// ledger rows recorded for them (see ledger.service.ts / delivery.service.ts),
+// which already equal Delivery.partnerEarning (the order's deliveryFee net
+// of the platform's delivery margin, snapshotted at assignment time — see
+// env.PLATFORM_DELIVERY_MARGIN_PERCENT), so gross comes straight from the
+// ledger with no Order lookup needed at all.
+async function buildDeliveryPartnerGroups(periodStart: Date, periodEnd: Date): Promise<Map<string, PayeeGroup>> {
+  const earningRows = await Transaction.find({
+    type: TRANSACTION_TYPE.DELIVERY_EARNING,
+    deliveryPartnerId: { $exists: true, $ne: null },
+    createdAt: { $gte: periodStart, $lt: periodEnd },
   });
-  if (!commission) return 0;
 
-  return commission.type === DISCOUNT_TYPES.PERCENTAGE ? grossAmount * (commission.value / 100) : commission.value * group.length;
+  const rowGroups = new Map<string, { orderIds: Set<string>; grossAmount: number }>();
+  for (const row of earningRows) {
+    const payeeId = row.deliveryPartnerId?.toString();
+    if (!payeeId) continue;
+    let group = rowGroups.get(payeeId);
+    if (!group) {
+      group = { orderIds: new Set(), grossAmount: 0 };
+      rowGroups.set(payeeId, group);
+    }
+    if (row.orderId) group.orderIds.add(row.orderId.toString());
+    group.grossAmount += row.amount;
+  }
+
+  const result = new Map<string, PayeeGroup>();
+  for (const [payeeId, group] of rowGroups) {
+    const partner = await DeliveryPartner.findById(payeeId).select('locationId');
+    if (!partner) continue;
+    result.set(payeeId, {
+      locationId: partner.locationId.toString(),
+      orderIds: [...group.orderIds],
+      grossAmount: group.grossAmount,
+      commissionAmount: 0,
+    });
+  }
+  return result;
 }
 
 export async function generateSettlements(
@@ -69,40 +119,23 @@ export async function generateSettlements(
   if (Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime()) || periodStart >= periodEnd) {
     throw ApiError.badRequest('periodStart must be a valid date before periodEnd', 'INVALID_PERIOD');
   }
+  if (data.locationId) assertLocationAccess(user, data.locationId);
 
-  const payeeField = PAYEE_FIELD[data.payeeType];
-
-  const orderFilter: Record<string, unknown> = {
-    status: 'DELIVERED',
-    // Proxy for "when the order reached DELIVERED" — Order doesn't track a
-    // dedicated deliveredAt timestamp, and updatedAt reflects the last status
-    // transition, which for a DELIVERED order is that delivery.
-    updatedAt: { $gte: periodStart, $lt: periodEnd },
-    [payeeField]: { $exists: true, $ne: null },
-    ...locationScopeFilter(user),
-  };
-  if (data.locationId) {
-    assertLocationAccess(user, data.locationId);
-    orderFilter.locationId = data.locationId;
-  }
-
-  const orders = (await Order.find(orderFilter)
-    .select('locationId vendorId storeId deliveryPartnerId businessType subtotal discount deliveryFee')
-    .lean()) as unknown as LeanOrderForSettlement[];
-
-  const groups = new Map<string, LeanOrderForSettlement[]>();
-  for (const order of orders) {
-    const payeeId = order[payeeField]?.toString();
-    if (!payeeId) continue;
-    const group = groups.get(payeeId);
-    if (group) group.push(order);
-    else groups.set(payeeId, [order]);
-  }
+  const groups =
+    data.payeeType === SETTLEMENT_PAYEE_TYPES.DELIVERY_PARTNER
+      ? await buildDeliveryPartnerGroups(periodStart, periodEnd)
+      : await buildVendorOrStoreGroups(data.payeeType, periodStart, periodEnd);
 
   const created: InstanceType<typeof Settlement>[] = [];
   const skipped: { payeeId: string; reason: string }[] = [];
 
   for (const [payeeId, group] of groups) {
+    // The ledger carries no locationId of its own — filtering/scoping happens
+    // here instead, against the locationId resolved for this payee above
+    // (same effect the old Order-query-time filter had).
+    if (data.locationId && group.locationId !== data.locationId) continue;
+    if (!hasLocationAccess(user, group.locationId)) continue;
+
     const overlapping = await Settlement.findOne({
       payeeType: data.payeeType,
       payeeId,
@@ -114,22 +147,19 @@ export async function generateSettlements(
       continue;
     }
 
-    const grossAmount = group.reduce((sum, o) => sum + grossForOrder(data.payeeType, o), 0);
-    const commissionAmount = await commissionForGroup(data.payeeType, payeeId, group);
-    const netAmount = grossAmount - commissionAmount;
-
+    const netAmount = group.grossAmount - group.commissionAmount;
     const settlement = await Settlement.create({
       payeeType: data.payeeType,
       payeeId,
-      locationId: group[0].locationId,
+      locationId: group.locationId,
       periodStart,
       periodEnd,
-      grossAmount,
-      commissionAmount,
+      grossAmount: group.grossAmount,
+      commissionAmount: group.commissionAmount,
       adjustments: 0,
       netAmount,
       status: SETTLEMENT_STATUS.PENDING,
-      orderIds: group.map((o) => o._id),
+      orderIds: group.orderIds,
     });
     created.push(settlement);
   }
@@ -212,6 +242,27 @@ export async function paySettlement(id: string, transactionReference: string, us
   settlement.transactionReference = transactionReference;
   settlement.paidAt = new Date();
   await settlement.save();
+
+  // Money actually leaving the platform to the payee. STORE settlements are
+  // recorded under the same VENDOR_SETTLEMENT ledger type as VENDOR ones — the
+  // TRANSACTION_TYPE enum (per the ledger's spec) doesn't define a separate
+  // STORE_SETTLEMENT, so this is a documented judgment call rather than an
+  // omission. Skipped for a zero/negative net (e.g. adjustments wiped it out
+  // entirely) — there's no payout to record.
+  if (settlement.netAmount > 0) {
+    await ledgerService.recordTransaction({
+      vendorId: settlement.payeeType === SETTLEMENT_PAYEE_TYPES.VENDOR ? settlement.payeeId.toString() : undefined,
+      storeId: settlement.payeeType === SETTLEMENT_PAYEE_TYPES.STORE ? settlement.payeeId.toString() : undefined,
+      deliveryPartnerId: settlement.payeeType === SETTLEMENT_PAYEE_TYPES.DELIVERY_PARTNER ? settlement.payeeId.toString() : undefined,
+      type:
+        settlement.payeeType === SETTLEMENT_PAYEE_TYPES.DELIVERY_PARTNER
+          ? TRANSACTION_TYPE.DELIVERY_SETTLEMENT
+          : TRANSACTION_TYPE.VENDOR_SETTLEMENT,
+      amount: settlement.netAmount,
+      direction: TRANSACTION_DIRECTION.DEBIT,
+      metadata: { settlementId: settlement.id, transactionReference },
+    });
+  }
 
   // Store has no login of its own (see the established pattern elsewhere in
   // this codebase), so there's no account to notify — only VENDOR and

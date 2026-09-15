@@ -4,20 +4,20 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
-import { Store } from '../../src/models/Store';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { FoodVariant } from '../../src/models/FoodVariant';
-import { FoodAddon } from '../../src/models/FoodAddon';
+import { VendorFoodItem } from '../../src/models/VendorFoodItem';
+import { ModifierGroup } from '../../src/models/ModifierGroup';
+import { ModifierOption } from '../../src/models/ModifierOption';
 import { InstamartCategory } from '../../src/models/InstamartCategory';
-import { InstamartProduct } from '../../src/models/InstamartProduct';
 import { Inventory } from '../../src/models/Inventory';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem, createTestStore, createInstamartListing } from './helpers/foodFixtures';
 
 describe('Orders: pricing, inventory reservation, status machine, cancellation', () => {
   let locationId: string;
+  let deliveryZoneId: string;
   let superAdminToken: string;
   let customerToken: string;
   let addressId: string;
@@ -37,7 +37,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
     });
     locationId = location.id;
 
-    await DeliveryZone.create({
+    const zone = await DeliveryZone.create({
       locationId,
       name: 'Order Zone',
       centerLatitude: 15,
@@ -48,6 +48,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       estimatedDeliveryTime: 40,
       status: 'ACTIVE',
     });
+    deliveryZoneId = zone.id;
 
     const adminPassword = await hashPassword('Password123');
     await AdminUser.create({ name: 'Super', email: 'o.super@example.com', password: adminPassword, role: 'SUPER_ADMIN', locationIds: [] });
@@ -80,10 +81,10 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
     let categoryId: string;
     let productId: string;
     let variantId: string;
-    let addonId: string;
+    let modifierOptionId: string;
 
     beforeAll(async () => {
-      const vendor = await Vendor.create({
+      const vendor = await createTestVendor({
         locationId,
         restaurantName: 'Order Restaurant',
         ownerName: 'Owner',
@@ -101,27 +102,36 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       const category = await FoodCategory.create({ name: 'Order Food Category', status: 'ACTIVE' });
       categoryId = category.id;
 
-      const product = await FoodProduct.create({
-        locationId,
-        vendorId,
-        categoryId,
-        name: 'Test Burger',
-        price: 100,
-        discount: 10, // 10%
-        tax: 5, // 5%
-        isAvailable: true,
-        status: 'ACTIVE',
-      });
-      productId = product.id;
+      // GLOBAL FoodProduct (name/category) + this vendor's own priced
+      // listing (VendorFoodItem) — price/availability live on the listing,
+      // not the global item, since Stage 2. `productId` in an order's
+      // items[] is the VendorFoodItem id, same role the old flat
+      // FoodProduct id used to play.
+      const vendorFoodItem = await createOrderableFoodItem(vendorId, categoryId, { name: 'Test Burger', price: 100 });
+      productId = vendorFoodItem.id;
 
-      const variant = await FoodVariant.create({ productId, name: 'Large', price: 150 });
+      const variant = await FoodVariant.create({ vendorFoodItemId: productId, name: 'Large', price: 150 });
       variantId = variant.id;
 
-      const addon = await FoodAddon.create({ vendorId, name: 'Extra Cheese', price: 20, maxQuantity: 3 });
-      addonId = addon.id;
+      // ModifierGroup/ModifierOption replaced the old flat FoodAddon model.
+      const modifierGroup = await ModifierGroup.create({
+        vendorFoodItemId: productId,
+        name: 'Extras',
+        minSelection: 0,
+        maxSelection: 3,
+        required: false,
+        status: 'ACTIVE',
+      });
+      const modifierOption = await ModifierOption.create({
+        modifierGroupId: modifierGroup.id,
+        name: 'Extra Cheese',
+        price: 20,
+        status: 'ACTIVE',
+      });
+      modifierOptionId = modifierOption.id;
     });
 
-    it('computes subtotal/discount/tax/deliveryFee/total server-side, ignoring nothing from the client (client sends no price fields at all)', async () => {
+    it('computes subtotal/deliveryFee/total server-side, ignoring nothing from the client (client sends no price fields at all), and leaves the commission snapshot unset when no Commission rule applies', async () => {
       const res = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)
@@ -130,23 +140,32 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
           vendorId,
           addressId,
           paymentMethod: 'COD',
-          items: [{ productId, variantId, quantity: 2, addons: [{ addonId, quantity: 1 }] }],
+          items: [{ productId, variantId, quantity: 2, modifiers: [{ modifierOptionId, quantity: 1 }] }],
         });
       expect(res.status).toBe(201);
 
-      // unitPrice=150 (variant), qty=2 -> lineSubtotal=300; addon 20*1*2=40 -> +40 = 340
-      // discount = 300*0.10 = 30 (addons not discounted)
-      // taxableBase = 340 - 30 = 310; tax = 310*0.05 = 15.5
+      // unitPrice=150 (variant), qty=2 -> lineSubtotal=300; modifier 20*1*2=40 -> +40 = 340
+      // Food lines carry no item-level discount/tax since Stage 2 (only the
+      // global FoodProduct/VendorFoodItem split — neither has those fields
+      // anymore); only a Coupon could discount at the order level, and none
+      // is applied here.
       // deliveryFee: subtotal(340) < freeDeliveryAbove(500) -> 30
       const order = res.body.data;
       expect(order.subtotal).toBeCloseTo(340, 2);
-      expect(order.discount).toBeCloseTo(30, 2);
-      expect(order.tax).toBeCloseTo(15.5, 2);
+      expect(order.discount).toBe(0);
+      expect(order.tax).toBe(0);
       expect(order.deliveryFee).toBe(30);
-      expect(order.total).toBeCloseTo(340 - 30 + 15.5 + 30, 2);
+      expect(order.total).toBeCloseTo(340 + 30, 2);
       expect(order.status).toBe('PENDING');
       expect(order.vendorId).toBe(vendorId);
       expect(order.storeId).toBeUndefined();
+
+      // Commission snapshot (Stage 4): no Commission rule is configured for
+      // this vendor/location, so resolveCommission returns null and all four
+      // fields stay unset — see the richer "commission IS applied" coverage
+      // in settlement.test.ts, where a GLOBAL rule is actually configured.
+      expect(order.commissionType).toBeUndefined();
+      expect(order.commissionAmount).toBeUndefined();
     });
 
     it('rejects an order for a vendor in a different location', async () => {
@@ -158,7 +177,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
         latitude: 50,
         longitude: 50,
       });
-      const otherVendor = await Vendor.create({
+      const otherVendor = await createTestVendor({
         locationId: otherLocation.id,
         restaurantName: 'Other Vendor',
         ownerName: 'Owner',
@@ -180,21 +199,21 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
           vendorId: otherVendor.id,
           addressId,
           paymentMethod: 'COD',
-          items: [{ productId, quantity: 1, addons: [] }],
+          items: [{ productId, quantity: 1, modifiers: [] }],
         });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe('VENDOR_LOCATION_MISMATCH');
     });
 
     it('rejects an order for an unavailable product', async () => {
-      await FoodProduct.updateOne({ _id: productId }, { isAvailable: false });
+      await VendorFoodItem.updateOne({ _id: productId }, { availabilityStatus: 'OUT_OF_STOCK' });
       const res = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
       expect(res.status).toBe(422);
       expect(res.body.error.code).toBe('PRODUCT_NOT_AVAILABLE');
-      await FoodProduct.updateOne({ _id: productId }, { isAvailable: true });
+      await VendorFoodItem.updateOne({ _id: productId }, { availabilityStatus: 'AVAILABLE' });
     });
 
     let orderId: string;
@@ -208,7 +227,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       const createRes = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
       orderId = createRes.body.data._id;
 
       const confirm = await request(app)
@@ -239,7 +258,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
 
     it("forbids a different vendor from updating this order's status", async () => {
       const otherVendorPassword = await hashPassword('VendorPass123');
-      await Vendor.create({
+      await createTestVendor({
         locationId,
         restaurantName: 'Unrelated Vendor',
         ownerName: 'Owner',
@@ -268,7 +287,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       const createRes = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
       const cancelRes = await request(app)
         .post(`/api/v1/orders/${createRes.body.data._id}/cancel`)
         .set('Authorization', `Bearer ${customerToken}`)
@@ -293,7 +312,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       const createRes = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+        .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
       const readyOrderId = createRes.body.data._id;
       for (const status of ['CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP']) {
         await request(app)
@@ -317,8 +336,15 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
     let inventoryId: string;
 
     beforeAll(async () => {
-      const store = await Store.create({
+      // checkServiceability's INSTAMART presence check
+      // (serviceability.service.ts's hasActiveBusinessPresence) matches on
+      // deliveryZoneId against the zone actually resolved for the
+      // customer's address coordinates — it must be the REAL "Order Zone"
+      // above, not an unrelated placeholder zone createTestStore would
+      // otherwise auto-create.
+      const store = await createTestStore({
         locationId,
+        deliveryZoneId,
         name: 'Order Store',
         managerName: 'Manager',
         phone: '9877700020',
@@ -331,18 +357,12 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
 
       const category = await InstamartCategory.create({ name: 'Order Instamart Category', status: 'ACTIVE' });
 
-      const product = await InstamartProduct.create({
-        locationId,
-        storeId,
-        categoryId: category.id,
+      const product = await createInstamartListing(locationId, storeId, category.id, {
         name: 'Order Rice',
         sku: 'ORDER-RICE',
         mrp: 100,
         sellingPrice: 80,
-        discount: 0,
-        tax: 0,
         unit: 'kg',
-        status: 'ACTIVE',
       });
       productId = product.id;
 
@@ -360,7 +380,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       const res = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ businessType: 'INSTAMART', storeId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 20, addons: [] }] });
+        .send({ businessType: 'INSTAMART', storeId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 20, modifiers: [] }] });
       expect(res.status).toBe(422);
       expect(res.body.error.code).toBe('INSUFFICIENT_STOCK');
     });
@@ -371,7 +391,7 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       const res = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ businessType: 'INSTAMART', storeId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 4, addons: [] }] });
+        .send({ businessType: 'INSTAMART', storeId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 4, modifiers: [] }] });
       expect(res.status).toBe(201);
       orderId = res.body.data._id;
 

@@ -4,11 +4,10 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 describe('Settlements: generation from DELIVERED orders, commission resolution, process/pay lifecycle', () => {
   let locationId: string;
@@ -95,7 +94,7 @@ describe('Settlements: generation from DELIVERED orders, commission resolution, 
     financeAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 's.finance@example.com', password: 'Password123' })).body.data.accessToken;
     foodAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 's.food@example.com', password: 'Password123' })).body.data.accessToken;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Settlement Restaurant',
       ownerName: 'Owner',
@@ -124,18 +123,16 @@ describe('Settlements: generation from DELIVERED orders, commission resolution, 
       .send({ locationId, address: '1 Settlement Lane', pincode: '110055', latitude: 18, longitude: 18 });
     addressId = addressRes.body.data._id;
 
+    // The old FoodProduct was vendor-owned with its own price/discount; it's
+    // now a GLOBAL catalog item with per-vendor pricing on VendorFoodItem
+    // (see helpers/foodFixtures.ts) — and VendorFoodItem carries no
+    // item-level discount/tax at all (order.service.ts's prepareFoodItems:
+    // "FOOD lines no longer apply an item-level discount/tax", a deliberate
+    // gap pending a later stage's spec), so the settlement math below is
+    // computed off the plain price with discount = 0 rather than the old
+    // 10%-off scenario.
     const category = await FoodCategory.create({ name: 'Settlement Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({
-      locationId,
-      vendorId,
-      categoryId: category.id,
-      name: 'Settlement Thali',
-      price: 200,
-      discount: 10, // 10% -> discount 20 on a single unit
-      tax: 0,
-      isAvailable: true,
-      status: 'ACTIVE',
-    });
+    const product = await createOrderableFoodItem(vendorId, category.id, { name: 'Settlement Thali', price: 200 });
     productId = product.id;
 
     // 10% GLOBAL commission as the platform default.
@@ -171,11 +168,11 @@ describe('Settlements: generation from DELIVERED orders, commission resolution, 
     deliveryPartnerId = partnerId;
     periodEnd = new Date().toISOString();
 
-    // subtotal = 200 (price) - discount 10% = 20 -> gross item revenue 180.
-    // deliveryFee = 30 (subtotal 180 < freeDeliveryAbove 1000).
+    // subtotal = 200 (VendorFoodItem price), no item-level discount anymore
+    // -> gross item revenue 200. deliveryFee = 30 (subtotal 200 < freeDeliveryAbove 1000).
     const orderRes = await request(app).get(`/api/v1/orders/${orderId}`).set('Authorization', `Bearer ${superAdminToken}`);
     expect(orderRes.body.data.subtotal).toBe(200);
-    expect(orderRes.body.data.discount).toBe(20);
+    expect(orderRes.body.data.discount).toBe(0);
     expect(orderRes.body.data.deliveryFee).toBe(30);
 
     const res = await request(app)
@@ -187,15 +184,22 @@ describe('Settlements: generation from DELIVERED orders, commission resolution, 
 
     const settlement = res.body.data.created[0];
     expect(settlement.payeeId).toBe(vendorId);
-    expect(settlement.grossAmount).toBe(180); // subtotal - discount, delivery fee excluded
-    expect(settlement.commissionAmount).toBeCloseTo(18, 2); // 10% of 180
-    expect(settlement.netAmount).toBeCloseTo(162, 2);
+    expect(settlement.grossAmount).toBe(200); // subtotal - discount, delivery fee excluded
+    expect(settlement.commissionAmount).toBeCloseTo(20, 2); // 10% of 200
+    expect(settlement.netAmount).toBeCloseTo(180, 2);
     expect(settlement.status).toBe('PENDING');
     expect(settlement.orderIds).toContain(orderId);
     vendorSettlementId = settlement._id;
   });
 
-  it('generates a DELIVERY_PARTNER settlement for the same period, earning the full delivery fee with no commission', async () => {
+  // The partner earns deliveryFee net of the platform's own delivery margin
+  // (env.PLATFORM_DELIVERY_MARGIN_PERCENT, default 20%) — not the full
+  // delivery fee — and that net figure (Delivery.partnerEarning) is what
+  // gets recorded as the DELIVERY_EARNING ledger row settlement generation
+  // reads from (see delivery.service.ts / settlement.service.ts's
+  // buildDeliveryPartnerGroups). "No commission" still holds: there's no
+  // further Commission-entity deduction on top of that margin.
+  it('generates a DELIVERY_PARTNER settlement for the same period, earning the delivery fee net of the platform delivery margin, with no further commission', async () => {
     const res = await request(app)
       .post('/api/v1/settlements/generate')
       .set('Authorization', `Bearer ${financeAdminToken}`)
@@ -205,9 +209,9 @@ describe('Settlements: generation from DELIVERED orders, commission resolution, 
 
     const settlement = res.body.data.created[0];
     expect(settlement.payeeId).toBe(deliveryPartnerId);
-    expect(settlement.grossAmount).toBe(30);
+    expect(settlement.grossAmount).toBe(24); // 30 delivery fee * (1 - 20% platform margin)
     expect(settlement.commissionAmount).toBe(0);
-    expect(settlement.netAmount).toBe(30);
+    expect(settlement.netAmount).toBe(24);
   });
 
   it('skips regenerating a settlement for the same payee when the period overlaps an existing one', async () => {
@@ -238,7 +242,7 @@ describe('Settlements: generation from DELIVERED orders, commission resolution, 
     expect(res.status).toBe(201);
     const settlement = res.body.data.created[0];
     expect(settlement.orderIds).toContain(orderId);
-    expect(settlement.commissionAmount).toBeCloseTo(180 * 0.25, 2); // 25% override, not the 10% GLOBAL rate
+    expect(settlement.commissionAmount).toBeCloseTo(200 * 0.25, 2); // 25% override, not the 10% GLOBAL rate
   });
 
   it('lets finance edit adjustments only while PENDING, recomputing netAmount', async () => {
@@ -247,7 +251,7 @@ describe('Settlements: generation from DELIVERED orders, commission resolution, 
       .set('Authorization', `Bearer ${financeAdminToken}`)
       .send({ adjustments: -5 });
     expect(res.status).toBe(200);
-    expect(res.body.data.netAmount).toBeCloseTo(180 - 18 - 5, 2);
+    expect(res.body.data.netAmount).toBeCloseTo(200 - 20 - 5, 2);
   });
 
   it("rejects marking a PENDING settlement paid before it's been processed", async () => {

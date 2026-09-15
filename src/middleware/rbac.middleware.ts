@@ -99,8 +99,15 @@ function defaultLocationExtractor(req: Request): string | undefined {
 // its own per the spec (only Customer/Vendor/DeliveryPartner/Admin do) —
 // Instamart product/store management is admin-only, so this helper is never
 // used for Store.
+//
+// A CUSTOMER is never the resource owner, but is also not subject to the
+// owner check — it's used only on the read-only routes opened up for
+// customer catalog browsing (vendor/store/product/addon detail + variants),
+// never on a create/update/delete path, so it falls through to the same
+// (today a no-op, since customer JWTs always carry an empty locationIds)
+// location check an ADMIN gets rather than being rejected as a non-owner.
 export function assertOwnerOrLocationAccess(user: JwtPayload, ownerId: string, locationId: string): void {
-  if (user.userType !== 'ADMIN') {
+  if (user.userType !== 'ADMIN' && user.userType !== 'CUSTOMER') {
     if (user.userId !== ownerId) {
       throw ApiError.forbidden('You do not have access to this resource', 'OWNER_FORBIDDEN');
     }

@@ -8,6 +8,7 @@ import * as customerAuthService from '../services/customerAuth.service';
 import * as tokenService from '../services/token.service';
 
 export const sendOtp = catchAsync(async (req: Request, res: Response) => {
+  console.log("sssssssssss")
   const result = await customerAuthService.sendCustomerOtp(req.body.phone);
   sendSuccess(res, result, 'OTP sent successfully');
 });
@@ -19,8 +20,12 @@ export const resendOtp = catchAsync(async (req: Request, res: Response) => {
 
 export const verifyOtp = catchAsync(async (req: Request, res: Response) => {
   const { phone, otp } = req.body;
-  const { customer, tokens } = await customerAuthService.verifyCustomerOtp(phone, otp, extractDeviceInfo(req));
-  sendSuccess(res, { customer, ...tokens }, 'Login successful');
+  const { customer, tokens, isNewCustomer } = await customerAuthService.verifyCustomerOtp(
+    phone,
+    otp,
+    extractDeviceInfo(req),
+  );
+  sendSuccess(res, { customer, isNewCustomer, ...tokens }, 'Login successful');
 });
 
 export const refresh = catchAsync(async (req: Request, res: Response) => {

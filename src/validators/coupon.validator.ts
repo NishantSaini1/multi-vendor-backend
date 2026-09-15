@@ -19,6 +19,8 @@ export const createCouponSchema = z.object({
       vendorIds: z.array(objectId).default([]),
       storeIds: z.array(objectId).default([]),
       categoryIds: z.array(objectId).default([]),
+      foodItemIds: z.array(objectId).default([]),
+      firstOrderOnly: z.boolean().default(false),
       startDate: z.coerce.date(),
       endDate: z.coerce.date(),
     })
@@ -43,6 +45,8 @@ export const updateCouponSchema = z.object({
     vendorIds: z.array(objectId).optional(),
     storeIds: z.array(objectId).optional(),
     categoryIds: z.array(objectId).optional(),
+    foodItemIds: z.array(objectId).optional(),
+    firstOrderOnly: z.boolean().optional(),
     startDate: z.coerce.date().optional(),
     endDate: z.coerce.date().optional(),
   }),
@@ -59,5 +63,14 @@ export const listCouponsQuerySchema = z.object({
     limit: z.string().optional(),
     sort: z.string().optional(),
     status: z.enum(Object.values(GENERIC_STATUS) as [string, ...string[]]).optional(),
+  }),
+});
+
+export const listActiveCouponsQuerySchema = z.object({
+  query: z.object({
+    locationId: objectId,
+    businessType: z.enum([BUSINESS_TYPES.FOOD, BUSINESS_TYPES.INSTAMART]),
+    vendorId: objectId.optional(),
+    storeId: objectId.optional(),
   }),
 });

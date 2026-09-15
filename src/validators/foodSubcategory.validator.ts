@@ -7,8 +7,10 @@ export const createFoodSubcategorySchema = z.object({
   body: z.object({
     categoryId: objectId,
     name: z.string().min(2),
+    slug: z.string().min(2).optional(),
+    description: z.string().optional(),
     image: z.string().url().optional(),
-    sortOrder: z.number().int().default(0),
+    displayOrder: z.number().int().default(0),
   }),
 });
 

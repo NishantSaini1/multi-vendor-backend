@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as controller from '../controllers/instamartCategory.controller';
 import { validate } from '../middleware/validate.middleware';
-import { authenticate, authenticateAdmin } from '../middleware/auth.middleware';
+import { authenticate } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../constants/permissions';
 import {
@@ -13,14 +13,20 @@ import {
 
 const router = Router();
 
-// See instamartCategory.routes.ts: read is shared with the Customer App,
-// write stays Admin-only.
-const readAccess = authenticate('ADMIN', 'CUSTOMER');
+// See instamartCategory.routes.ts: shared, admin-managed taxonomy — read is
+// shared with Store App + Customer App. Categories stay Admin-only, but a
+// STORE may add its own subcategory under a category it can see, and may
+// edit/delete only a subcategory it created itself, and only while no other
+// store has a product listed under it yet (enforced in
+// instamartCategory.service.ts, not here — requirePermission below is a
+// no-op for a STORE actor, same as every other Store-writable route).
+const readAccess = authenticate('ADMIN', 'STORE', 'CUSTOMER');
+const writeAccess = authenticate('ADMIN', 'STORE');
 
 router.get('/', readAccess, requirePermission(PERMISSIONS.INSTAMART_CATALOG_VIEW), controller.listSubcategories);
 router.post(
   '/',
-  authenticateAdmin,
+  writeAccess,
   requirePermission(PERMISSIONS.INSTAMART_CATALOG_MANAGE),
   validate(createInstamartSubcategorySchema),
   controller.createSubcategory,
@@ -34,21 +40,21 @@ router.get(
 );
 router.patch(
   '/:id',
-  authenticateAdmin,
+  writeAccess,
   requirePermission(PERMISSIONS.INSTAMART_CATALOG_MANAGE),
   validate(updateInstamartSubcategorySchema),
   controller.updateSubcategory,
 );
 router.delete(
   '/:id',
-  authenticateAdmin,
+  writeAccess,
   requirePermission(PERMISSIONS.INSTAMART_CATALOG_MANAGE),
   validate(instamartSubcategoryIdParamSchema),
   controller.removeSubcategory,
 );
 router.patch(
   '/:id/status',
-  authenticateAdmin,
+  writeAccess,
   requirePermission(PERMISSIONS.INSTAMART_CATALOG_MANAGE),
   validate(updateInstamartSubcategoryStatusSchema),
   controller.updateSubcategoryStatus,

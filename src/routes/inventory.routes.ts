@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as controller from '../controllers/inventory.controller';
 import { validate } from '../middleware/validate.middleware';
-import { authenticateAdmin } from '../middleware/auth.middleware';
+import { authenticate } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../constants/permissions';
 import {
@@ -13,7 +13,10 @@ import {
 
 const router = Router();
 
-router.use(authenticateAdmin);
+// Shared with the Store App — ownership is enforced in inventory.service.ts
+// (a STORE actor only ever sees/adjusts its own storeId's rows), not by
+// route-level RBAC alone.
+router.use(authenticate('ADMIN', 'STORE'));
 
 // Static/prefixed routes must be declared before the generic '/:id' route.
 router.get('/low-stock', requirePermission(PERMISSIONS.INVENTORY_VIEW), controller.lowStock);

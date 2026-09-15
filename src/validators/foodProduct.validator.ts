@@ -1,26 +1,28 @@
 import { z } from 'zod';
-import { GENERIC_STATUS } from '../constants/enums';
+import { FOOD_TYPE, GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
 
 const objectId = z.string().length(24);
 
+const nutritionInfoSchema = z.object({
+  calories: z.number().nonnegative().optional(),
+  protein: z.number().nonnegative().optional(),
+  carbs: z.number().nonnegative().optional(),
+  fat: z.number().nonnegative().optional(),
+});
+
 export const createFoodProductSchema = z.object({
   body: z.object({
-    // vendorId/locationId are ignored (and derived server-side) for a vendor actor;
-    // required for an admin actor — enforced in the service, not here.
-    vendorId: objectId.optional(),
-    locationId: objectId.optional(),
     categoryId: objectId,
     subcategoryId: objectId.optional(),
     name: z.string().min(2),
+    slug: z.string().min(2).optional(),
     description: z.string().optional(),
     images: z.array(z.string().url()).default([]),
-    price: z.number().nonnegative(),
-    discount: z.number().nonnegative().default(0),
-    tax: z.number().nonnegative().default(0),
-    isVeg: z.boolean().default(true),
-    isAvailable: z.boolean().default(true),
-    preparationTime: z.number().int().positive().default(20),
-    sortOrder: z.number().int().default(0),
+    foodType: z.enum(Object.values(FOOD_TYPE) as [string, ...string[]]).default(FOOD_TYPE.VEG),
+    ingredients: z.array(z.string()).default([]),
+    allergens: z.array(z.string()).default([]),
+    nutritionInfo: nutritionInfoSchema.optional(),
+    displayOrder: z.number().int().default(0),
   }),
 });
 
@@ -35,37 +37,5 @@ export const foodProductIdParamSchema = z.object({
 
 export const updateFoodProductStatusSchema = z.object({
   params: z.object({ id: objectId }),
-  body: z.object({ status: z.enum([GENERIC_STATUS.ACTIVE, GENERIC_STATUS.INACTIVE]) }),
-});
-
-export const updateFoodProductAvailabilitySchema = z.object({
-  params: z.object({ id: objectId }),
-  body: z.object({ isAvailable: z.boolean() }),
-});
-
-export const createFoodVariantSchema = z.object({
-  params: z.object({ productId: objectId }),
-  body: z.object({
-    name: z.string().min(1),
-    price: z.number().nonnegative(),
-    isDefault: z.boolean().default(false),
-  }),
-});
-
-export const updateFoodVariantSchema = z.object({
-  params: z.object({ productId: objectId, variantId: objectId }),
-  body: z.object({
-    name: z.string().min(1).optional(),
-    price: z.number().nonnegative().optional(),
-    isDefault: z.boolean().optional(),
-    status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
-  }),
-});
-
-export const foodVariantParamsSchema = z.object({
-  params: z.object({ productId: objectId, variantId: objectId }),
-});
-
-export const foodProductVariantsListSchema = z.object({
-  params: z.object({ productId: objectId }),
+  body: z.object({ status: z.enum(Object.values(GLOBAL_FOOD_ITEM_STATUS) as [string, ...string[]]) }),
 });

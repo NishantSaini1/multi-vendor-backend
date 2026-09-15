@@ -8,8 +8,9 @@ import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { verifyCheckoutSignature, verifyWebhookSignature } from '../utils/razorpaySignature';
 import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
-import { NOTIFICATION_TYPES } from '../constants/enums';
+import { NOTIFICATION_TYPES, TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
 import * as notificationService from './notification.service';
+import * as ledgerService from './ledger.service';
 import { logger } from '../utils/logger';
 
 async function findOrderOrThrow(orderId: string) {
@@ -110,6 +111,21 @@ async function markPaymentPaid(payment: InstanceType<typeof Payment>, razorpayPa
   );
 
   if (order) {
+    // The one shared function both the client-verify (/verify) and webhook
+    // paths already call to mark a payment PAID — recording the ledger entry
+    // here means it's impossible for either RAZORPAY path to mark a payment
+    // paid without also recording it. The WALLET path never reaches this
+    // function (it's settled synchronously in order.service.ts's createOrder)
+    // and records its own equivalent entry there.
+    await ledgerService.recordTransaction({
+      orderId: order.id,
+      vendorId: order.vendorId?.toString(),
+      storeId: order.storeId?.toString(),
+      type: TRANSACTION_TYPE.ORDER_PAYMENT,
+      amount: payment.amount,
+      direction: TRANSACTION_DIRECTION.CREDIT,
+    });
+
     await notificationService.notify(
       order.customerId.toString(),
       'CUSTOMER',

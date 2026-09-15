@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as controller from '../controllers/coupon.controller';
 import { validate } from '../middleware/validate.middleware';
-import { authenticateAdmin } from '../middleware/auth.middleware';
+import { authenticate, authenticateAdmin } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../constants/permissions';
 import {
@@ -10,9 +10,20 @@ import {
   updateCouponStatusSchema,
   couponIdParamSchema,
   listCouponsQuerySchema,
+  listActiveCouponsQuerySchema,
 } from '../validators/coupon.validator';
 
 const router = Router();
+
+// Customer-facing "browse applicable coupons" — registered before the
+// admin-only gate below, since it's the one read customers themselves are
+// allowed to make.
+router.get(
+  '/active',
+  authenticate('CUSTOMER'),
+  validate(listActiveCouponsQuerySchema),
+  controller.listActive,
+);
 
 // Admin-only management surface. Applying a coupon to an order (validating
 // eligibility, computing the discount, incrementing usedCount) happens as

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { phoneSchema } from './auth.validator';
+import { phoneSchema, passwordSchema } from './auth.validator';
 import { STORE_STATUS, APPROVAL_STATUS } from '../constants/enums';
 
 const objectId = z.string().length(24);
@@ -7,10 +7,12 @@ const objectId = z.string().length(24);
 export const createStoreSchema = z.object({
   body: z.object({
     locationId: objectId,
+    storeTypeIds: z.array(objectId).min(1, 'Select at least one store type'),
     name: z.string().min(2),
     managerName: z.string().min(2),
     phone: phoneSchema,
     email: z.string().email().optional(),
+    password: passwordSchema,
     address: z.string().min(3),
     latitude: z.number(),
     longitude: z.number(),
@@ -19,6 +21,11 @@ export const createStoreSchema = z.object({
   }),
 });
 
+// password stays in the update body (unlike locationId/deliveryZoneId,
+// which are never client-settable post-creation) — omitted entirely, it
+// simply becomes optional, so an admin's "Reset Password" field on the
+// store edit form actually reaches the service. See store.service.ts's
+// updateStore, which hashes it before saving, same as createStore.
 export const updateStoreSchema = z.object({
   params: z.object({ id: objectId }),
   body: createStoreSchema.shape.body.partial(),
@@ -35,6 +42,11 @@ export const updateStoreStatusSchema = z.object({
 
 export const storeIdOnlyParamSchema = z.object({
   params: z.object({ storeId: objectId }),
+});
+
+export const rejectStoreSchema = z.object({
+  params: z.object({ id: objectId }),
+  body: z.object({ reason: z.string().min(3) }),
 });
 
 export const createStoreDocumentSchema = z.object({

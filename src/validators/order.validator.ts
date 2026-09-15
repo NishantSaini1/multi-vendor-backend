@@ -4,31 +4,45 @@ import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
 
 const objectId = z.string().length(24);
 
-const orderItemAddonInput = z.object({
-  addonId: objectId,
+const orderItemModifierInput = z.object({
+  modifierOptionId: objectId,
   quantity: z.number().int().positive().default(1),
 });
 
 const orderItemInput = z.object({
+  // FOOD: a VendorFoodItem._id; INSTAMART: an InstamartProduct._id — see
+  // OrderItem.ts for why this field keeps the name `productId` either way.
   productId: objectId,
   variantId: objectId.optional(),
   quantity: z.number().int().positive(),
-  addons: z.array(orderItemAddonInput).default([]),
+  // Modifier selections (FOOD only — must be empty for INSTAMART items, see
+  // order.service.ts's prepareInstamartItems).
+  modifiers: z.array(orderItemModifierInput).default([]),
 });
 
 export const createOrderSchema = z.object({
   body: z
     .object({
-      businessType: z.enum([BUSINESS_TYPES.FOOD, BUSINESS_TYPES.INSTAMART]),
+      // Either a cartId (FOOD checkout from the server-side Cart — see
+      // cart.service.ts / order.service.ts's createOrder) or an inline
+      // businessType+items[] (either business type, the original path).
+      cartId: objectId.optional(),
+      businessType: z.enum([BUSINESS_TYPES.FOOD, BUSINESS_TYPES.INSTAMART]).optional(),
       vendorId: objectId.optional(),
       storeId: objectId.optional(),
       addressId: objectId,
-      items: z.array(orderItemInput).min(1),
+      items: z.array(orderItemInput).optional(),
       paymentMethod: z.enum([PAYMENT_METHODS.RAZORPAY, PAYMENT_METHODS.COD, PAYMENT_METHODS.WALLET]),
       couponCode: z.string().trim().min(1).optional(),
     })
-    .refine((data) => (data.businessType === BUSINESS_TYPES.FOOD ? !!data.vendorId : !!data.storeId), {
-      message: 'vendorId is required for FOOD orders, storeId is required for INSTAMART orders',
+    .refine((data) => !!data.cartId || (!!data.businessType && !!data.items && data.items.length > 0), {
+      message: 'Either cartId or businessType with a non-empty items array is required',
+    })
+    .refine((data) => !!data.cartId || data.businessType !== BUSINESS_TYPES.FOOD || !!data.vendorId, {
+      message: 'vendorId is required for FOOD orders',
+    })
+    .refine((data) => !!data.cartId || data.businessType !== BUSINESS_TYPES.INSTAMART || !!data.storeId, {
+      message: 'storeId is required for INSTAMART orders',
     }),
 });
 

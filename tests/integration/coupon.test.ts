@@ -4,11 +4,10 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 describe('Coupons: admin CRUD and order-time application', () => {
   let locationId: string;
@@ -17,7 +16,9 @@ describe('Coupons: admin CRUD and order-time application', () => {
   let addressId: string;
   let vendorId: string;
   let otherVendorId: string;
+  let categoryId: string;
   let productId: string;
+  let globalFoodItemId: string;
   let otherVendorProductId: string;
 
   function farPastDate() {
@@ -36,7 +37,7 @@ describe('Coupons: admin CRUD and order-time application', () => {
         vendorId: vendor,
         addressId: forAddressId,
         paymentMethod: 'COD',
-        items: [{ productId: product, quantity: 1, addons: [] }],
+        items: [{ productId: product, quantity: 1, modifiers: [] }],
         ...(couponCode ? { couponCode } : {}),
       });
   }
@@ -64,7 +65,7 @@ describe('Coupons: admin CRUD and order-time application', () => {
     await AdminUser.create({ name: 'Marketing', email: 'cp.marketing@example.com', password, role: 'MARKETING_ADMIN', locationIds: [] });
     marketingToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'cp.marketing@example.com', password: 'Password123' })).body.data.accessToken;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Coupon Restaurant',
       ownerName: 'Owner',
@@ -79,7 +80,7 @@ describe('Coupons: admin CRUD and order-time application', () => {
     });
     vendorId = vendor.id;
 
-    const otherVendor = await Vendor.create({
+    const otherVendor = await createTestVendor({
       locationId,
       restaurantName: 'Other Coupon Restaurant',
       ownerName: 'Owner',
@@ -95,9 +96,11 @@ describe('Coupons: admin CRUD and order-time application', () => {
     otherVendorId = otherVendor.id;
 
     const category = await FoodCategory.create({ name: 'Coupon Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({ locationId, vendorId, categoryId: category.id, name: 'Coupon Thali', price: 250, discount: 0, tax: 0, isAvailable: true, status: 'ACTIVE' });
+    categoryId = category.id;
+    const product = await createOrderableFoodItem(vendorId, categoryId, { name: 'Coupon Thali', price: 250 });
     productId = product.id;
-    const otherProduct = await FoodProduct.create({ locationId, vendorId: otherVendorId, categoryId: category.id, name: 'Other Thali', price: 250, discount: 0, tax: 0, isAvailable: true, status: 'ACTIVE' });
+    globalFoodItemId = product.globalFoodItemId.toString();
+    const otherProduct = await createOrderableFoodItem(otherVendorId, categoryId, { name: 'Other Thali', price: 250 });
     otherVendorProductId = otherProduct.id;
 
     const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9877300050' });
@@ -293,5 +296,67 @@ describe('Coupons: admin CRUD and order-time application', () => {
     expect(res.status).toBe(200);
     const getRes = await request(app).get(`/api/v1/coupons/${save20Id}`).set('Authorization', `Bearer ${marketingToken}`);
     expect(getRes.status).toBe(404);
+  });
+
+  describe('Stage 5: foodItemIds scoping and firstOrderOnly', () => {
+    it("rejects a coupon scoped to a different item's global FoodProduct", async () => {
+      // otherVendorProductId's VendorFoodItem maps onto a DIFFERENT global
+      // FoodProduct than `globalFoodItemId` (each createOrderableFoodItem
+      // call makes its own global item) — so scoping to `globalFoodItemId`
+      // must reject an order for the other vendor's item.
+      await request(app)
+        .post('/api/v1/coupons')
+        .set('Authorization', `Bearer ${marketingToken}`)
+        .send({
+          code: 'ITEMONLY',
+          discountType: 'FIXED',
+          discountValue: 10,
+          foodItemIds: [globalFoodItemId],
+          startDate: farPastDate(),
+          endDate: farFutureDate(),
+        });
+
+      const res = await placeOrder(customerToken, otherVendorId, otherVendorProductId, 'ITEMONLY');
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('COUPON_NOT_APPLICABLE');
+
+      // ...but applies to an order containing the item it's actually scoped to.
+      const okRes = await placeOrder(customerToken, vendorId, productId, 'ITEMONLY');
+      expect(okRes.status).toBe(201);
+    });
+
+    it('rejects a firstOrderOnly coupon for a customer who has already placed a (non-cancelled) order', async () => {
+      await request(app)
+        .post('/api/v1/coupons')
+        .set('Authorization', `Bearer ${marketingToken}`)
+        .send({
+          code: 'FIRSTORDER',
+          discountType: 'FIXED',
+          discountValue: 10,
+          firstOrderOnly: true,
+          startDate: farPastDate(),
+          endDate: farFutureDate(),
+        });
+
+      // `customerToken` already placed several orders earlier in this file.
+      const res = await placeOrder(customerToken, vendorId, productId, 'FIRSTORDER');
+      expect(res.status).toBe(422);
+      expect(res.body.error.code).toBe('COUPON_FIRST_ORDER_ONLY');
+    });
+
+    it('accepts a firstOrderOnly coupon for a brand-new customer with no prior orders', async () => {
+      const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9877300088' });
+      const verify = await request(app).post('/api/v1/auth/customer/verify-otp').send({ phone: '9877300088', otp: sendOtp.body.data.devOtp });
+      const newCustomerToken = verify.body.data.accessToken;
+      const newCustomerId = verify.body.data.customer._id;
+      const newAddressRes = await request(app)
+        .post(`/api/v1/customers/${newCustomerId}/addresses`)
+        .set('Authorization', `Bearer ${newCustomerToken}`)
+        .send({ locationId, address: 'First Order Lane', pincode: '110036', latitude: 19, longitude: 19 });
+
+      const res = await placeOrder(newCustomerToken, vendorId, productId, 'FIRSTORDER', newAddressRes.body.data._id);
+      expect(res.status).toBe(201);
+      expect(res.body.data.couponDiscount).toBe(10);
+    });
   });
 });

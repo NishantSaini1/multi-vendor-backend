@@ -3,9 +3,9 @@ import app from '../../src/app';
 import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
-import { Vendor } from '../../src/models/Vendor';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor } from './helpers/foodFixtures';
 
 describe('Delivery zones + serviceability check', () => {
   let locationId: string;
@@ -87,7 +87,7 @@ describe('Delivery zones + serviceability check', () => {
   });
 
   it('reports serviceable once an active vendor exists in the location', async () => {
-    await Vendor.create({
+    await createTestVendor({
       locationId,
       restaurantName: 'Zone Restaurant',
       ownerName: 'Owner',

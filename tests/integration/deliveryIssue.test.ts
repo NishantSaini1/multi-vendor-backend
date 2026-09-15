@@ -4,11 +4,10 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 describe('Delivery issues: raising, cross-party visibility, and admin resolution', () => {
   let locationId: string;
@@ -39,7 +38,7 @@ describe('Delivery issues: raising, cross-party visibility, and admin resolution
     const createRes = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
     const orderId = createRes.body.data._id;
     for (const status of ['CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP']) {
       await request(app).patch(`/api/v1/orders/${orderId}/status`).set('Authorization', `Bearer ${vendorToken}`).send({ status });
@@ -82,7 +81,7 @@ describe('Delivery issues: raising, cross-party visibility, and admin resolution
     deliveryAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'di.delivery@example.com', password: 'Password123' })).body.data.accessToken;
     foodAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'di.food@example.com', password: 'Password123' })).body.data.accessToken;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Issue Restaurant',
       ownerName: 'Owner',
@@ -99,7 +98,7 @@ describe('Delivery issues: raising, cross-party visibility, and admin resolution
     vendorToken = (await request(app).post('/api/v1/auth/vendor/login').send({ identifier: '9877800010', password: 'VendorPass123' })).body.data.accessToken;
 
     const category = await FoodCategory.create({ name: 'Issue Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({ locationId, vendorId, categoryId: category.id, name: 'Issue Thali', price: 100, isAvailable: true, status: 'ACTIVE' });
+    const product = await createOrderableFoodItem(vendorId, category.id, { name: 'Issue Thali', price: 100 });
     productId = product.id;
 
     const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9877800099' });

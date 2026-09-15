@@ -13,6 +13,7 @@ import { assertLocationAccess } from '../middleware/rbac.middleware';
 import { haversineDistanceKm } from '../utils/geo';
 import { markPartnerActive, markPartnerInactive } from './deliveryPartnerLocation.service';
 import { notifyOrderStatusChange } from '../utils/orderNotifications';
+import * as ledgerService from './ledger.service';
 import {
   DELIVERY_STATUS,
   DELIVERY_TRANSITIONS,
@@ -21,6 +22,8 @@ import {
   DELIVERY_PARTNER_AVAILABILITY,
 } from '../constants/deliveryStatus';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
+import { TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
+import { env } from '../config/env';
 
 const DELIVERY_STATUS_TIMESTAMP_FIELD: Record<string, keyof IDelivery | undefined> = {
   ACCEPTED: 'acceptedAt',
@@ -112,6 +115,12 @@ export async function assignDeliveryPartner(orderId: string, deliveryPartnerId: 
     let createdDelivery: InstanceType<typeof Delivery> | undefined;
 
     await session.withTransaction(async () => {
+      // Snapshotted now, at assignment — the delivery partner's earning is
+      // fixed at this point rather than recomputed later against whatever
+      // the platform's margin config happens to be at DELIVERED time.
+      const deliveryFee = order.deliveryFee;
+      const partnerEarning = deliveryFee * (1 - env.PLATFORM_DELIVERY_MARGIN_PERCENT / 100);
+
       const [delivery] = await Delivery.create(
         [
           {
@@ -126,6 +135,8 @@ export async function assignDeliveryPartner(orderId: string, deliveryPartnerId: 
             status: DELIVERY_STATUS.ASSIGNED,
             assignedAt: new Date(),
             distance: distanceKm,
+            deliveryFee,
+            partnerEarning,
           },
         ],
         { session },
@@ -321,6 +332,33 @@ export async function updateDeliveryStatus(id: string, newStatus: string, user: 
           partner.totalOrders += 1;
           partner.completedOrders += 1;
           await partner.save({ session });
+
+          // Stage 4 ledger entries. Commission/platform-fee use the order's
+          // commission SNAPSHOT from creation time (never recomputed here) —
+          // this is the real-world path for an order reaching DELIVERED (see
+          // ledger.service.ts's recordOrderCommissionLedger for why this is
+          // shared with order.service.ts's updateOrderStatus). Delivery
+          // earning uses the Delivery's own partnerEarning (snapshotted at
+          // assignment time net of the platform's delivery margin — see
+          // assignDeliveryPartner above), not the raw order.deliveryFee — the
+          // Stage 4 version of this used deliveryFee as a placeholder before
+          // partnerEarning existed; this is that refinement. Falls back to
+          // deliveryFee for a pre-Stage-5 Delivery record that predates the
+          // field. Skipped entirely for a free delivery (nothing earned).
+          await ledgerService.recordOrderCommissionLedger(order, session);
+          const earning = delivery.partnerEarning ?? order.deliveryFee;
+          if (earning > 0) {
+            await ledgerService.recordTransaction(
+              {
+                orderId: order.id,
+                deliveryPartnerId: partner.id,
+                type: TRANSACTION_TYPE.DELIVERY_EARNING,
+                amount: earning,
+                direction: TRANSACTION_DIRECTION.CREDIT,
+              },
+              session,
+            );
+          }
         }
       }
 

@@ -25,6 +25,13 @@ const envSchema = z.object({
   OTP_MAX_ATTEMPTS: z.coerce.number().default(5),
   OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().default(60),
 
+  // Comma-separated phone numbers that always get a fixed OTP (TEST_OTP_CODE)
+  // instead of a random one, for repeatable manual/Postman testing without
+  // needing to re-fetch a fresh devOtp each time. Never honored in production
+  // (see otp.service.ts) regardless of what's configured here.
+  TEST_OTP_PHONES: z.string().optional().default('9810000000'),
+  TEST_OTP_CODE: z.string().default('123456'),
+
   REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
 
   NOMINATIM_USER_AGENT: z.string().default('multi-vendor-backend/1.0'),
@@ -54,6 +61,15 @@ const envSchema = z.object({
   ORDER_TIMEOUT_MINUTES: z.coerce.number().default(30),
   NOTIFICATION_RETRY_MAX_ATTEMPTS: z.coerce.number().default(3),
 
+  // The platform's cut of the delivery fee, as a percentage — a delivery
+  // partner's own earning on a delivery (Delivery.partnerEarning) is the
+  // order's deliveryFee net of this margin. Set at assignment time (see
+  // delivery.service.ts's assignDeliveryPartner). COMMISSION_LEVELS/Commission
+  // has no DELIVERY_PARTNER level (delivery partners keep 100% of their
+  // earnings under that model — see settlement.service.ts), so this is a
+  // separate, simpler flat percentage rather than a full Commission rule.
+  PLATFORM_DELIVERY_MARGIN_PERCENT: z.coerce.number().default(20),
+
   LOG_LEVEL: z.string().default('info'),
 
   BCRYPT_SALT_ROUNDS: z.coerce.number().default(12),
@@ -70,6 +86,7 @@ if (!parsed.success) {
 export const env = {
   ...parsed.data,
   CLIENT_URLS: parsed.data.CLIENT_URL.split(',').map((u) => u.trim()).filter(Boolean),
+  TEST_OTP_PHONES_LIST: parsed.data.TEST_OTP_PHONES.split(',').map((p) => p.trim()).filter(Boolean),
   isProduction: parsed.data.NODE_ENV === 'production',
   isDevelopment: parsed.data.NODE_ENV === 'development',
   isTest: parsed.data.NODE_ENV === 'test',

@@ -1,13 +1,20 @@
 import { Schema, model, Document, Types } from 'mongoose';
 import { GENERIC_STATUS } from '../constants/enums';
+import { slugify } from '../utils/slug';
 
+// Fully global, admin-managed taxonomy — mirrors InstamartCategory. A
+// marketplace of independent vendors needs one canonical "North Indian"
+// category every vendor's menu references, not each vendor inventing its own
+// (see foodCategory.service.ts). Which categories/subcategories a specific
+// vendor may actually use is controlled separately via VendorCatalogAccess.
 export interface IFoodCategory extends Document {
   _id: Types.ObjectId;
-  locationId?: Types.ObjectId;
-  vendorId?: Types.ObjectId;
   name: string;
+  slug: string;
+  description?: string;
   image?: string;
-  sortOrder: number;
+  icon?: string;
+  displayOrder: number;
   status: string;
   createdAt: Date;
   updatedAt: Date;
@@ -15,19 +22,27 @@ export interface IFoodCategory extends Document {
 
 const foodCategorySchema = new Schema<IFoodCategory>(
   {
-    // null locationId => global category available across all locations
-    locationId: { type: Schema.Types.ObjectId, ref: 'Location', default: null, index: true },
-    // set only for a vendor's own private category; null/absent => admin-managed
-    vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
     name: { type: String, required: true, trim: true },
+    slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    description: { type: String },
     image: { type: String },
-    sortOrder: { type: Number, default: 0 },
+    icon: { type: String },
+    displayOrder: { type: Number, default: 0 },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },
   },
   { timestamps: true },
 );
 
-foodCategorySchema.index({ locationId: 1, status: 1 });
-foodCategorySchema.index({ vendorId: 1, status: 1 });
+// Auto-derive a kebab-case slug from name when the caller doesn't supply one.
+// Runs on 'validate' (not 'save') so it happens before the `required` check.
+foodCategorySchema.pre('validate', function (next) {
+  if (!this.slug && this.name) {
+    this.slug = slugify(this.name);
+  }
+  next();
+});
+
+foodCategorySchema.index({ status: 1 });
+foodCategorySchema.index({ name: 'text' });
 
 export const FoodCategory = model<IFoodCategory>('FoodCategory', foodCategorySchema);

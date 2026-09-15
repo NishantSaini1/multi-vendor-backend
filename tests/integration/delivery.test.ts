@@ -4,12 +4,11 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { DeliveryPartner } from '../../src/models/DeliveryPartner';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 describe('Delivery assignment engine + status machine', () => {
   let locationId: string;
@@ -24,7 +23,7 @@ describe('Delivery assignment engine + status machine', () => {
     const createRes = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
     const orderId = createRes.body.data._id;
     for (const status of ['CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP']) {
       await request(app)
@@ -73,7 +72,7 @@ describe('Delivery assignment engine + status machine', () => {
     superAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'df.super@example.com', password: 'Password123' })).body.data.accessToken;
 
     const vendorPassword = await hashPassword('VendorPass123');
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'DF Restaurant',
       ownerName: 'Owner',
@@ -90,7 +89,7 @@ describe('Delivery assignment engine + status machine', () => {
     vendorToken = (await request(app).post('/api/v1/auth/vendor/login').send({ identifier: '9888800001', password: 'VendorPass123' })).body.data.accessToken;
 
     const category = await FoodCategory.create({ name: 'DF Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({ locationId, vendorId, categoryId: category.id, name: 'DF Item', price: 100, isAvailable: true, status: 'ACTIVE' });
+    const product = await createOrderableFoodItem(vendorId, category.id, { name: 'DF Item', price: 100 });
     productId = product.id;
 
     const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9888800099' });
@@ -114,7 +113,7 @@ describe('Delivery assignment engine + status machine', () => {
     const createRes = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'COD', items: [{ productId, quantity: 1, modifiers: [] }] });
     const { partnerId } = await createOnlinePartner('9888810001', 25, 25);
 
     const res = await request(app)

@@ -17,6 +17,12 @@ export interface ICoupon extends Document {
   vendorIds: Types.ObjectId[];
   storeIds: Types.ObjectId[];
   categoryIds: Types.ObjectId[];
+  // The GLOBAL Food Item (FoodProduct) ids this coupon is scoped to — empty
+  // means unscoped/applies to any item, same convention as vendorIds/
+  // storeIds/categoryIds above. Checked in coupon.service.ts's applyCoupon
+  // against the order's line items' global food item ids.
+  foodItemIds: Types.ObjectId[];
+  firstOrderOnly: boolean;
   startDate: Date;
   endDate: Date;
   status: string;
@@ -39,6 +45,8 @@ const couponSchema = new Schema<ICoupon>(
     vendorIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Vendor' }], default: [] },
     storeIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Store' }], default: [] },
     categoryIds: { type: [{ type: Schema.Types.ObjectId }], default: [] },
+    foodItemIds: { type: [{ type: Schema.Types.ObjectId, ref: 'FoodProduct' }], default: [] },
+    firstOrderOnly: { type: Boolean, default: false },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },

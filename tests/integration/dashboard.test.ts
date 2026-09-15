@@ -4,10 +4,10 @@ import app from '../../src/app';
 import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
-import { Vendor } from '../../src/models/Vendor';
 import { Order } from '../../src/models/Order';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor } from './helpers/foodFixtures';
 
 describe('Dashboard: aggregated overview and orders trend', () => {
   let locationId: string;
@@ -47,7 +47,7 @@ describe('Dashboard: aggregated overview and orders trend', () => {
     superAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'db.super@example.com', password: 'Password123' })).body.data.accessToken;
     marketingAdminToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'db.marketing@example.com', password: 'Password123' })).body.data.accessToken;
 
-    await Vendor.create({
+    await createTestVendor({
       locationId,
       restaurantName: 'Dashboard Restaurant',
       ownerName: 'Owner',

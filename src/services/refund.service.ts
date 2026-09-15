@@ -8,10 +8,22 @@ import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { PAYMENT_METHODS, PAYMENT_STATUS, REFUND_STATUS, REFUND_TYPES, WALLET_TRANSACTION_TYPES } from '../constants/paymentStatus';
-import { NOTIFICATION_TYPES } from '../constants/enums';
+import { NOTIFICATION_TYPES, REFUND_REASON, TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
 import * as walletService from './wallet.service';
 import * as notificationService from './notification.service';
+import * as ledgerService from './ledger.service';
 import { logger } from '../utils/logger';
+
+// Derives a REFUND_REASON from who cancelled the order, for the automatic
+// refund path (see autoRefundForCancelledOrder below) — a manual admin-
+// initiated refund (createRefund) instead lets the caller pick any
+// REFUND_REASON value directly.
+function reasonFromCancelledBy(cancelledBy?: string): string {
+  if (cancelledBy === 'VENDOR' || cancelledBy === 'STORE') return REFUND_REASON.VENDOR_REJECTED;
+  if (cancelledBy === 'CUSTOMER') return REFUND_REASON.CUSTOMER_CANCELLED;
+  if (cancelledBy === 'ADMIN') return REFUND_REASON.ADMIN_REFUND;
+  return REFUND_REASON.OTHER;
+}
 
 async function findPaymentForOrder(orderId: string) {
   const payment = await Payment.findOne({ orderId, status: { $in: [PAYMENT_STATUS.PAID, PAYMENT_STATUS.PARTIALLY_REFUNDED] } }).sort({
@@ -97,7 +109,7 @@ function assertRefundAccess(user: JwtPayload, order: IOrder): void {
 }
 
 export async function createRefund(
-  data: { orderId: string; type: 'FULL' | 'PARTIAL'; amount?: number; reason: string },
+  data: { orderId: string; type: 'FULL' | 'PARTIAL'; amount?: number; reason: string; reasonDetail?: string },
   user: JwtPayload,
 ) {
   const order = await Order.findById(data.orderId);
@@ -126,11 +138,27 @@ export async function createRefund(
     type: data.type,
     amount,
     reason: data.reason,
+    reasonDetail: data.reasonDetail,
     status: REFUND_STATUS.PENDING,
   });
 
   await executeRefund(payment, amount, refund);
   await finalizeOrderPaymentStatus(order._id, payment.id);
+
+  // Platform-side ledger entry — money leaving the platform back to the
+  // customer. Vendor/store clawback (docking the refunded amount from their
+  // payable) isn't implemented anywhere yet (settlement.service.ts has no
+  // existing refund/adjustment handling to stay consistent with either), so
+  // this is deliberately platform-only for now — a documented judgment call,
+  // not an oversight.
+  await ledgerService.recordTransaction({
+    orderId: order.id,
+    type: TRANSACTION_TYPE.REFUND,
+    amount,
+    direction: TRANSACTION_DIRECTION.DEBIT,
+    metadata: { refundId: refund.id },
+  });
+
   await notificationService.notify(
     order.customerId.toString(),
     'CUSTOMER',
@@ -149,7 +177,7 @@ export async function createRefund(
 // transition already committed) but the refund record is left FAILED for
 // finance to retry manually via `createRefund`, rather than failing the
 // cancellation itself.
-export async function autoRefundForCancelledOrder(order: IOrder, reason: string) {
+export async function autoRefundForCancelledOrder(order: IOrder, reasonDetail?: string) {
   try {
     const payment = await findPaymentForOrder(order.id);
     const alreadyRefunded = await totalRefundedForPayment(payment.id);
@@ -162,12 +190,24 @@ export async function autoRefundForCancelledOrder(order: IOrder, reason: string)
       customerId: order.customerId,
       type: REFUND_TYPES.FULL,
       amount,
-      reason,
+      reason: reasonFromCancelledBy(order.cancelledBy),
+      reasonDetail,
       status: REFUND_STATUS.PENDING,
     });
 
     await executeRefund(payment, amount, refund);
     await finalizeOrderPaymentStatus(order._id, payment.id);
+
+    // See createRefund's comment: platform-side only, vendor/store clawback
+    // is a future concern.
+    await ledgerService.recordTransaction({
+      orderId: order.id,
+      type: TRANSACTION_TYPE.REFUND,
+      amount,
+      direction: TRANSACTION_DIRECTION.DEBIT,
+      metadata: { refundId: refund.id },
+    });
+
     await notificationService.notify(
       order.customerId.toString(),
       'CUSTOMER',

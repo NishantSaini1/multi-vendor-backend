@@ -20,6 +20,41 @@ export async function listCoupons(filter: Record<string, unknown>, pagination: P
   return { items, total };
 }
 
+// Customer-facing "browse applicable coupons" — mirrors the same
+// eligibility rules applyCoupon enforces at order time (active window,
+// location/businessType/vendor/store scoping, not yet exhausted), so a
+// coupon shown here is actually usable, not just a code that exists. Unlike
+// applyCoupon this can't check the per-user limit against a specific order's
+// subtotal in advance, since there's no order yet — the customer still
+// finds that out for real when POST /orders validates it.
+export async function listActiveCouponsForCustomer(ctx: {
+  locationId: string;
+  businessType: string;
+  vendorId?: string;
+  storeId?: string;
+}) {
+  const now = new Date();
+  const scopeOr = (field: 'locationIds' | 'vendorIds' | 'storeIds', value: string | undefined) => [
+    { [field]: { $size: 0 } },
+    ...(value ? [{ [field]: value }] : []),
+  ];
+
+  const coupons = await Coupon.find({
+    status: GENERIC_STATUS.ACTIVE,
+    startDate: { $lte: now },
+    endDate: { $gte: now },
+    $and: [
+      { $or: [{ businessTypes: { $size: 0 } }, { businessTypes: ctx.businessType }] },
+      { $or: scopeOr('locationIds', ctx.locationId) },
+      { $or: scopeOr('vendorIds', ctx.vendorId) },
+      { $or: scopeOr('storeIds', ctx.storeId) },
+    ],
+    $expr: { $or: [{ $eq: ['$usageLimit', null] }, { $lt: ['$usedCount', '$usageLimit'] }] },
+  }).sort({ discountValue: -1 });
+
+  return coupons;
+}
+
 export async function createCoupon(data: Record<string, unknown>) {
   const code = String(data.code).toUpperCase();
   const existing = await Coupon.findOne({ code });
@@ -60,6 +95,10 @@ interface CouponApplicationContext {
   vendorId?: string;
   storeId?: string;
   subtotal: number;
+  // The order's line items' GLOBAL food item ids (FoodProduct, not
+  // VendorFoodItem) — undefined/empty for INSTAMART orders, since
+  // Coupon.foodItemIds only ever scopes Food items.
+  foodItemIds?: string[];
 }
 
 // Validates a coupon code against the order actually being placed and
@@ -97,6 +136,13 @@ export async function applyCoupon(
   if (coupon.storeIds.length > 0 && (!ctx.storeId || !coupon.storeIds.some((id) => id.toString() === ctx.storeId))) {
     throw ApiError.unprocessable('This coupon is not valid for this store', 'COUPON_NOT_APPLICABLE');
   }
+  if (coupon.foodItemIds.length > 0) {
+    const orderedIds = new Set(ctx.foodItemIds ?? []);
+    const matches = coupon.foodItemIds.some((id) => orderedIds.has(id.toString()));
+    if (!matches) {
+      throw ApiError.unprocessable('This coupon is not valid for the items in your order', 'COUPON_NOT_APPLICABLE');
+    }
+  }
   if (ctx.subtotal < coupon.minimumOrder) {
     throw ApiError.unprocessable(`This coupon requires a minimum order of ${coupon.minimumOrder}`, 'COUPON_MINIMUM_ORDER_NOT_MET');
   }
@@ -111,6 +157,18 @@ export async function applyCoupon(
   }).session(session);
   if (usedByCustomer >= (coupon.perUserLimit ?? 1)) {
     throw ApiError.unprocessable('You have already used this coupon the maximum number of times', 'COUPON_PER_USER_LIMIT_REACHED');
+  }
+
+  if (coupon.firstOrderOnly) {
+    // Any non-cancelled order at all disqualifies them — deliberately not
+    // scoped to this coupon's own code (that's what perUserLimit is for).
+    const priorOrders = await Order.countDocuments({
+      customerId: ctx.customerId,
+      status: { $ne: 'CANCELLED' },
+    }).session(session);
+    if (priorOrders > 0) {
+      throw ApiError.unprocessable('This coupon is only valid on your first order', 'COUPON_FIRST_ORDER_ONLY');
+    }
   }
 
   let discount = coupon.discountType === DISCOUNT_TYPES.PERCENTAGE ? ctx.subtotal * (coupon.discountValue / 100) : coupon.discountValue;

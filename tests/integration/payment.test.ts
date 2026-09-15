@@ -5,13 +5,12 @@ import { redisClient } from '../../src/config/redis';
 import { razorpay } from '../../src/config/razorpay';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { Payment } from '../../src/models/Payment';
 import { Order } from '../../src/models/Order';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 function checkoutSignature(razorpayOrderId: string, razorpayPaymentId: string) {
   return crypto.createHmac('sha256', process.env.RAZORPAY_SECRET!).update(`${razorpayOrderId}|${razorpayPaymentId}`).digest('hex');
@@ -39,7 +38,7 @@ describe('Payments: Razorpay checkout, signature verification, webhook', () => {
     const res = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'RAZORPAY', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'RAZORPAY', items: [{ productId, quantity: 1, modifiers: [] }] });
     return res.body.data;
   }
 
@@ -83,7 +82,7 @@ describe('Payments: Razorpay checkout, signature verification, webhook', () => {
       .send({ locationId, address: '1 Payment Lane', pincode: '110077', latitude: 13, longitude: 13 });
     addressId = addressRes.body.data._id;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Payment Restaurant',
       ownerName: 'Owner',
@@ -99,17 +98,7 @@ describe('Payments: Razorpay checkout, signature verification, webhook', () => {
     vendorId = vendor.id;
 
     const category = await FoodCategory.create({ name: 'Payment Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({
-      locationId,
-      vendorId,
-      categoryId: category.id,
-      name: 'Payment Thali',
-      price: 100,
-      discount: 0,
-      tax: 0,
-      isAvailable: true,
-      status: 'ACTIVE',
-    });
+    const product = await createOrderableFoodItem(vendorId, category.id, { name: 'Payment Thali', price: 100 });
     productId = product.id;
   });
 

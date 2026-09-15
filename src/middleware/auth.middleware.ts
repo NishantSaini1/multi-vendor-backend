@@ -35,6 +35,7 @@ export function authenticate(...allowedUserTypes: UserType[]) {
 
 export const authenticateCustomer = authenticate('CUSTOMER');
 export const authenticateVendor = authenticate('VENDOR');
+export const authenticateStore = authenticate('STORE');
 export const authenticateDeliveryPartner = authenticate('DELIVERY_PARTNER');
 export const authenticateAdmin = authenticate('ADMIN');
 export const authenticateAny = authenticate();

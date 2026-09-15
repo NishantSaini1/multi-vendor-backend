@@ -1,8 +1,20 @@
 import { z } from 'zod';
 import { phoneSchema, passwordSchema } from './auth.validator';
-import { VENDOR_STATUS, APPROVAL_STATUS } from '../constants/enums';
+import { VENDOR_STATUS, APPROVAL_STATUS, DISCOUNT_TYPES, DAYS_OF_WEEK } from '../constants/enums';
 
 const objectId = z.string().length(24);
+
+const businessHoursDaySchema = z.object({
+  day: z.enum(Object.values(DAYS_OF_WEEK) as [string, ...string[]]),
+  openTime: z.string().optional(),
+  closeTime: z.string().optional(),
+  isClosed: z.boolean().default(false),
+});
+
+const businessHoursSchema = z.object({
+  weeklySchedule: z.array(businessHoursDaySchema).default([]),
+  holidays: z.array(z.string()).default([]),
+});
 
 export const createVendorSchema = z.object({
   body: z.object({
@@ -17,19 +29,24 @@ export const createVendorSchema = z.object({
     latitude: z.number(),
     longitude: z.number(),
     serviceRadius: z.number().positive().default(5),
-    cuisines: z.array(z.string()).default([]),
+    vendorTypeIds: z.array(objectId).min(1),
     gstNumber: z.string().optional(),
     fssaiNumber: z.string().optional(),
     panNumber: z.string().optional(),
     logo: z.string().optional(),
     coverImage: z.string().optional(),
+    businessHours: businessHoursSchema.optional(),
+    // Optional — when both are supplied, a VENDOR-level Commission rule is
+    // created for this vendor in the same step (see vendor.service.ts).
+    commissionType: z.enum(Object.values(DISCOUNT_TYPES) as [string, ...string[]]).optional(),
+    commissionValue: z.number().min(0).optional(),
   }),
 });
 
 export const updateVendorSchema = z.object({
   params: z.object({ id: objectId }),
   body: createVendorSchema.shape.body
-    .omit({ password: true })
+    .omit({ password: true, commissionType: true, commissionValue: true })
     .extend({
       isOpen: z.boolean().optional(),
       temporaryClosure: z

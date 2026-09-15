@@ -1,6 +1,7 @@
 export const USER_TYPES = {
   CUSTOMER: 'CUSTOMER',
   VENDOR: 'VENDOR',
+  STORE: 'STORE',
   DELIVERY_PARTNER: 'DELIVERY_PARTNER',
   ADMIN: 'ADMIN',
 } as const;

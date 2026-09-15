@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as controller from '../controllers/foodSubcategory.controller';
 import { validate } from '../middleware/validate.middleware';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, authenticateAdmin } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../constants/permissions';
 import {
@@ -13,15 +13,14 @@ import {
 
 const router = Router();
 
-// See foodCategory.routes.ts: read is shared with Vendor App + Customer App,
-// write stays Admin Panel + Vendor App with ownership enforced in the service.
+// See foodCategory.routes.ts: fully global, admin-managed taxonomy — read is
+// shared with Vendor App + Customer App, write is Admin-only.
 const readAccess = authenticate('ADMIN', 'VENDOR', 'CUSTOMER');
-const writeAccess = authenticate('ADMIN', 'VENDOR');
 
 router.get('/', readAccess, requirePermission(PERMISSIONS.FOOD_CATALOG_VIEW), controller.list);
 router.post(
   '/',
-  writeAccess,
+  authenticateAdmin,
   requirePermission(PERMISSIONS.FOOD_CATALOG_MANAGE),
   validate(createFoodSubcategorySchema),
   controller.create,
@@ -35,21 +34,21 @@ router.get(
 );
 router.patch(
   '/:id',
-  writeAccess,
+  authenticateAdmin,
   requirePermission(PERMISSIONS.FOOD_CATALOG_MANAGE),
   validate(updateFoodSubcategorySchema),
   controller.update,
 );
 router.delete(
   '/:id',
-  writeAccess,
+  authenticateAdmin,
   requirePermission(PERMISSIONS.FOOD_CATALOG_MANAGE),
   validate(foodSubcategoryIdParamSchema),
   controller.remove,
 );
 router.patch(
   '/:id/status',
-  writeAccess,
+  authenticateAdmin,
   requirePermission(PERMISSIONS.FOOD_CATALOG_MANAGE),
   validate(updateFoodSubcategoryStatusSchema),
   controller.updateStatus,

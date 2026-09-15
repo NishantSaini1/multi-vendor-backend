@@ -8,6 +8,7 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   const pagination = parsePagination(req);
   const filter: Record<string, unknown> = {};
   if (req.query.placement) filter.placement = req.query.placement;
+  if (req.query.businessType) filter.businessType = req.query.businessType;
   if (req.query.status) filter.status = req.query.status;
 
   const { items, total } = await bannerService.listBanners(filter, pagination);
@@ -42,6 +43,7 @@ export const updateStatus = catchAsync(async (req: Request, res: Response) => {
 export const active = catchAsync(async (req: Request, res: Response) => {
   const banners = await bannerService.listActiveBanners({
     placement: req.query.placement as string,
+    businessType: req.query.businessType as string | undefined,
     locationId: req.query.locationId as string | undefined,
     vendorId: req.query.vendorId as string | undefined,
     storeId: req.query.storeId as string | undefined,

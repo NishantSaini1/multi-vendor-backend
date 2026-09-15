@@ -1,13 +1,16 @@
+import mongoose from 'mongoose';
 import { Vendor } from '../models/Vendor';
 import { VendorDocument } from '../models/VendorDocument';
-import { FoodProduct } from '../models/FoodProduct';
+import { VendorFoodItem } from '../models/VendorFoodItem';
 import { Location } from '../models/Location';
+import { Commission } from '../models/Commission';
 import { ApiError } from '../utils/ApiError';
 import { hashPassword } from '../utils/password';
 import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess } from '../middleware/rbac.middleware';
-import { VENDOR_STATUS, APPROVAL_STATUS } from '../constants/enums';
+import { VENDOR_STATUS, APPROVAL_STATUS, COMMISSION_LEVELS, GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
+import { BUSINESS_TYPES } from '../constants/orderStatus';
 
 export async function listVendors(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -17,12 +20,51 @@ export async function listVendors(filter: Record<string, unknown>, pagination: P
   return { items, total };
 }
 
+// Accepts an optional commissionType/commissionValue pair alongside the usual
+// vendor fields — when both are present, a VENDOR-level Commission rule is
+// created for the new vendor in the same transaction (so a vendor never
+// exists with an ambiguous, half-created commission setup).
 export async function createVendor(data: Record<string, unknown>) {
   const locationExists = await Location.exists({ _id: data.locationId });
   if (!locationExists) throw ApiError.notFound('Location not found', 'LOCATION_NOT_FOUND');
 
-  const password = await hashPassword(data.password as string);
-  return Vendor.create({ ...data, password, status: VENDOR_STATUS.ACTIVE, approvalStatus: APPROVAL_STATUS.PENDING });
+  const { commissionType, commissionValue, ...vendorData } = data as Record<string, unknown> & {
+    commissionType?: string;
+    commissionValue?: number;
+  };
+
+  const password = await hashPassword(vendorData.password as string);
+
+  const session = await mongoose.startSession();
+  try {
+    let createdVendor: InstanceType<typeof Vendor> | undefined;
+    await session.withTransaction(async () => {
+      const [vendor] = await Vendor.create(
+        [{ ...vendorData, password, status: VENDOR_STATUS.ACTIVE, approvalStatus: APPROVAL_STATUS.PENDING }],
+        { session },
+      );
+      createdVendor = vendor;
+
+      if (commissionType && commissionValue !== undefined) {
+        await Commission.create(
+          [
+            {
+              level: COMMISSION_LEVELS.VENDOR,
+              vendorId: vendor.id,
+              businessType: BUSINESS_TYPES.FOOD,
+              type: commissionType,
+              value: commissionValue,
+              status: GENERIC_STATUS.ACTIVE,
+            },
+          ],
+          { session },
+        );
+      }
+    });
+    return createdVendor as InstanceType<typeof Vendor>;
+  } finally {
+    await session.endSession();
+  }
 }
 
 async function findVendorOrThrow(id: string) {
@@ -116,9 +158,11 @@ export async function getVendorDashboard(id: string, user: JwtPayload) {
   const vendor = await findVendorOrThrow(id);
   assertLocationAccess(user, requireVendorLocationId(vendor));
 
+  // Since Stage 2, price/availability live on the vendor's own VendorFoodItem
+  // listing, not the (now global) FoodProduct — see vendorFoodItem.service.ts.
   const [productCount, availableProductCount] = await Promise.all([
-    FoodProduct.countDocuments({ vendorId: id }),
-    FoodProduct.countDocuments({ vendorId: id, isAvailable: true }),
+    VendorFoodItem.countDocuments({ vendorId: id }),
+    VendorFoodItem.countDocuments({ vendorId: id, availabilityStatus: VENDOR_FOOD_ITEM_AVAILABILITY.AVAILABLE }),
   ]);
 
   return {
@@ -137,8 +181,8 @@ export async function getVendorProducts(id: string, user: JwtPayload, pagination
   assertLocationAccess(user, requireVendorLocationId(vendor));
 
   const [items, total] = await Promise.all([
-    FoodProduct.find({ vendorId: id }).sort(pagination.sort).skip(pagination.skip).limit(pagination.limit),
-    FoodProduct.countDocuments({ vendorId: id }),
+    VendorFoodItem.find({ vendorId: id }).sort(pagination.sort).skip(pagination.skip).limit(pagination.limit),
+    VendorFoodItem.countDocuments({ vendorId: id }),
   ]);
   return { items, total };
 }

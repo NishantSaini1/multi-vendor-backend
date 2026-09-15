@@ -13,6 +13,16 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });
 
+export const listActive = catchAsync(async (req: Request, res: Response) => {
+  const coupons = await couponService.listActiveCouponsForCustomer({
+    locationId: req.query.locationId as string,
+    businessType: req.query.businessType as string,
+    vendorId: req.query.vendorId as string | undefined,
+    storeId: req.query.storeId as string | undefined,
+  });
+  sendSuccess(res, coupons);
+});
+
 export const create = catchAsync(async (req: Request, res: Response) => {
   const coupon = await couponService.createCoupon(req.body);
   sendSuccess(res, coupon, 'Coupon created', 201);

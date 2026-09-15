@@ -1,6 +1,7 @@
 import { Schema, model, Document, Types } from 'mongoose';
 import { BUSINESS_TYPES, ORDER_STATUS_VALUES } from '../constants/orderStatus';
 import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
+import { DISCOUNT_TYPES } from '../constants/enums';
 
 export interface IOrderAddressSnapshot {
   address: string;
@@ -27,6 +28,15 @@ export interface IOrder extends Document {
   packagingFee: number;
   platformFee: number;
   total: number;
+  // Commission snapshot — resolved via commission.service.resolveCommission
+  // and captured at order-creation time (see order.service.ts's createOrder),
+  // not re-resolved live at settlement time. All four stay unset when no
+  // commission rule applies (the vendor/store keeps 100%, same as
+  // resolveCommission returning null).
+  commissionType?: string;
+  commissionRate?: number;
+  commissionBaseAmount?: number;
+  commissionAmount?: number;
   paymentId?: Types.ObjectId;
   paymentMethod: string;
   paymentStatus: string;
@@ -68,6 +78,10 @@ const orderSchema = new Schema<IOrder>(
     packagingFee: { type: Number, default: 0 },
     platformFee: { type: Number, default: 0 },
     total: { type: Number, required: true, min: 0 },
+    commissionType: { type: String, enum: Object.values(DISCOUNT_TYPES) },
+    commissionRate: { type: Number, min: 0 },
+    commissionBaseAmount: { type: Number, min: 0 },
+    commissionAmount: { type: Number, min: 0 },
     paymentId: { type: Schema.Types.ObjectId, ref: 'Payment' },
     paymentMethod: { type: String, enum: Object.values(PAYMENT_METHODS), required: true },
     paymentStatus: { type: String, enum: Object.values(PAYMENT_STATUS), default: PAYMENT_STATUS.PENDING },

@@ -4,13 +4,12 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { Notification } from '../../src/models/Notification';
 import { NotificationDevice } from '../../src/models/NotificationDevice';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 describe('Notifications: device registration, in-app inbox, and event-triggered sends', () => {
   let locationId: string;
@@ -40,7 +39,7 @@ describe('Notifications: device registration, in-app inbox, and event-triggered 
       status: 'ACTIVE',
     });
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Notify Restaurant',
       ownerName: 'Owner',
@@ -56,7 +55,7 @@ describe('Notifications: device registration, in-app inbox, and event-triggered 
     vendorId = vendor.id;
 
     const category = await FoodCategory.create({ name: 'Notify Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({ locationId, vendorId, categoryId: category.id, name: 'Notify Thali', price: 100, isAvailable: true, status: 'ACTIVE' });
+    const product = await createOrderableFoodItem(vendorId, category.id, { name: 'Notify Thali', price: 100 });
     productId = product.id;
 
     const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9877900350' });
@@ -126,7 +125,7 @@ describe('Notifications: device registration, in-app inbox, and event-triggered 
     const res = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, modifiers: [] }] });
     expect(res.status).toBe(201);
     const orderId = res.body.data._id;
 
@@ -140,7 +139,7 @@ describe('Notifications: device registration, in-app inbox, and event-triggered 
     const res = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, modifiers: [] }] });
     const orderId = res.body.data._id;
 
     const cancelRes = await request(app)

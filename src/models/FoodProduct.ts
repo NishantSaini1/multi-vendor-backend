@@ -1,50 +1,81 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { GENERIC_STATUS } from '../constants/enums';
+import { FOOD_TYPE, GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
+import { slugify } from '../utils/slug';
 
+export interface IFoodNutritionInfo {
+  calories?: number;
+  protein?: number;
+  carbs?: number;
+  fat?: number;
+}
+
+// The GLOBAL Food Item — one canonical "Paneer Butter Masala" a marketplace of
+// independent vendors all reference, mirroring how InstamartGlobalProduct
+// works for the Instamart vertical. Price/availability/prep-time are no
+// longer stored here — they're per-vendor now, on VendorFoodItem, since two
+// vendors selling "Paneer Butter Masala" charge different prices. An item can
+// arrive here either admin-created (submittedByVendorId unset, status ACTIVE
+// immediately) or approved out of a vendor's FoodItemSubmission (see
+// foodItemSubmission.service.ts).
 export interface IFoodProduct extends Document {
   _id: Types.ObjectId;
-  locationId: Types.ObjectId;
-  vendorId: Types.ObjectId;
   categoryId: Types.ObjectId;
   subcategoryId?: Types.ObjectId;
   name: string;
+  slug: string;
   description?: string;
   images: string[];
-  price: number;
-  discount: number;
-  tax: number;
-  isVeg: boolean;
-  isAvailable: boolean;
-  preparationTime: number;
+  foodType: string;
+  ingredients?: string[];
+  allergens?: string[];
+  nutritionInfo?: IFoodNutritionInfo;
   status: string;
-  sortOrder: number;
+  submittedByVendorId?: Types.ObjectId;
+  displayOrder: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
+const nutritionInfoSchema = new Schema<IFoodNutritionInfo>(
+  {
+    calories: { type: Number, min: 0 },
+    protein: { type: Number, min: 0 },
+    carbs: { type: Number, min: 0 },
+    fat: { type: Number, min: 0 },
+  },
+  { _id: false },
+);
+
 const foodProductSchema = new Schema<IFoodProduct>(
   {
-    locationId: { type: Schema.Types.ObjectId, ref: 'Location', required: true, index: true },
-    vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', required: true, index: true },
     categoryId: { type: Schema.Types.ObjectId, ref: 'FoodCategory', required: true, index: true },
     subcategoryId: { type: Schema.Types.ObjectId, ref: 'FoodSubcategory' },
     name: { type: String, required: true, trim: true },
+    slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
     description: { type: String },
     images: { type: [String], default: [] },
-    price: { type: Number, required: true, min: 0 },
-    discount: { type: Number, default: 0, min: 0 },
-    tax: { type: Number, default: 0, min: 0 },
-    isVeg: { type: Boolean, default: true },
-    isAvailable: { type: Boolean, default: true },
-    preparationTime: { type: Number, default: 20 },
-    status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },
-    sortOrder: { type: Number, default: 0 },
+    foodType: { type: String, enum: Object.values(FOOD_TYPE), required: true, default: FOOD_TYPE.VEG },
+    ingredients: { type: [String], default: [] },
+    allergens: { type: [String], default: [] },
+    nutritionInfo: { type: nutritionInfoSchema },
+    status: { type: String, enum: Object.values(GLOBAL_FOOD_ITEM_STATUS), default: GLOBAL_FOOD_ITEM_STATUS.ACTIVE },
+    submittedByVendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
+    displayOrder: { type: Number, default: 0 },
   },
   { timestamps: true },
 );
 
-foodProductSchema.index({ vendorId: 1, status: 1 });
-foodProductSchema.index({ locationId: 1, categoryId: 1 });
+// Auto-derive a kebab-case slug from name when the caller doesn't supply one.
+// Runs on 'validate' (not 'save') so it happens before the `required` check.
+foodProductSchema.pre('validate', function (next) {
+  if (!this.slug && this.name) {
+    this.slug = slugify(this.name);
+  }
+  next();
+});
+
+foodProductSchema.index({ categoryId: 1, subcategoryId: 1 });
+foodProductSchema.index({ status: 1 });
 foodProductSchema.index({ name: 'text', description: 'text' });
 
 export const FoodProduct = model<IFoodProduct>('FoodProduct', foodProductSchema);

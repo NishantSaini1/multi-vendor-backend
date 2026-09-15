@@ -12,19 +12,17 @@ function requireUser(req: Request) {
 
 export const list = catchAsync(async (req: Request, res: Response) => {
   const user = requireUser(req);
-  const pagination = parsePagination(req, { sortOrder: 1 });
+  const pagination = parsePagination(req, { displayOrder: 1 });
 
   const filter: Record<string, unknown> = foodCategoryService.foodCategoryListFilter(user);
-  if (req.query.locationId) filter.locationId = req.query.locationId;
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.vendorId && user.userType !== 'VENDOR') filter.vendorId = req.query.vendorId;
+  if (req.query.status && user.userType === 'ADMIN') filter.status = req.query.status;
 
   const { items, total } = await foodCategoryService.listFoodCategories(filter, pagination, user);
   sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });
 
 export const create = catchAsync(async (req: Request, res: Response) => {
-  const category = await foodCategoryService.createFoodCategory(req.body, requireUser(req));
+  const category = await foodCategoryService.createFoodCategory(req.body);
   sendSuccess(res, category, 'Food category created successfully', 201);
 });
 
@@ -34,16 +32,16 @@ export const getById = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const update = catchAsync(async (req: Request, res: Response) => {
-  const category = await foodCategoryService.updateFoodCategory(req.params.id, req.body, requireUser(req));
+  const category = await foodCategoryService.updateFoodCategory(req.params.id, req.body);
   sendSuccess(res, category, 'Food category updated successfully');
 });
 
 export const remove = catchAsync(async (req: Request, res: Response) => {
-  await foodCategoryService.deleteFoodCategory(req.params.id, requireUser(req));
+  await foodCategoryService.deleteFoodCategory(req.params.id);
   sendSuccess(res, null, 'Food category deleted successfully');
 });
 
 export const updateStatus = catchAsync(async (req: Request, res: Response) => {
-  const category = await foodCategoryService.updateFoodCategoryStatus(req.params.id, req.body.status, requireUser(req));
+  const category = await foodCategoryService.updateFoodCategoryStatus(req.params.id, req.body.status);
   sendSuccess(res, category, 'Food category status updated');
 });

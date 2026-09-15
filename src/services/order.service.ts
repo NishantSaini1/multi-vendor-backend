@@ -1,52 +1,64 @@
 import mongoose from 'mongoose';
 import { Order, IOrder } from '../models/Order';
-import { OrderItem, IOrderItemAddon } from '../models/OrderItem';
+import { OrderItem, IOrderItemModifier } from '../models/OrderItem';
 import { OrderStatusHistory } from '../models/OrderStatusHistory';
 import { Customer } from '../models/Customer';
 import { CustomerAddress } from '../models/CustomerAddress';
 import { Location } from '../models/Location';
 import { Vendor } from '../models/Vendor';
 import { Store } from '../models/Store';
-import { FoodProduct } from '../models/FoodProduct';
-import { FoodVariant } from '../models/FoodVariant';
-import { FoodAddon } from '../models/FoodAddon';
 import { InstamartProduct } from '../models/InstamartProduct';
+import { InstamartGlobalProduct } from '../models/InstamartGlobalProduct';
+import { InstamartVariant } from '../models/InstamartVariant';
 import { Inventory } from '../models/Inventory';
 import { InventoryTransaction } from '../models/InventoryTransaction';
 import { Payment } from '../models/Payment';
+import { Cart } from '../models/Cart';
+import { CartItem } from '../models/CartItem';
 import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { generateOrderNumber } from '../utils/orderNumber';
 import { checkServiceability } from './serviceability.service';
+import { computeLine, resolveFoodLineItem } from './foodPricing.service';
+import * as commissionService from './commission.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { FOOD_ORDER_TRANSITIONS, INSTAMART_ORDER_TRANSITIONS } from '../constants/orderStatus';
 import { PAYMENT_METHODS, PAYMENT_STATUS, WALLET_TRANSACTION_TYPES } from '../constants/paymentStatus';
 import { VENDOR_STATUS, APPROVAL_STATUS, STORE_STATUS, GENERIC_STATUS } from '../constants/enums';
-import { INVENTORY_TRANSACTION_TYPES } from '../constants/enums';
+import { INVENTORY_TRANSACTION_TYPES, DISCOUNT_TYPES, TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
 import * as walletService from './wallet.service';
 import * as refundService from './refund.service';
 import * as couponService from './coupon.service';
 import * as notificationService from './notification.service';
+import * as ledgerService from './ledger.service';
 import { notifyOrderStatusChange } from '../utils/orderNotifications';
 import { NOTIFICATION_TYPES } from '../constants/enums';
 
 interface CreateOrderItemInput {
+  // FOOD: a VendorFoodItem._id; INSTAMART: an InstamartProduct._id (see OrderItem.ts).
   productId: string;
   variantId?: string;
   quantity: number;
-  addons: { addonId: string; quantity: number }[];
+  // Modifier selections — FOOD only, must be empty for INSTAMART items.
+  modifiers: { modifierOptionId: string; quantity: number }[];
 }
 
 interface CreateOrderInput {
-  businessType: 'FOOD' | 'INSTAMART';
+  // Optional when `cartId` is given instead — see the cart-checkout branch in
+  // createOrder below, which derives businessType/vendorId/items from the
+  // Cart and ignores any client-supplied values for those fields.
+  businessType?: 'FOOD' | 'INSTAMART';
   vendorId?: string;
   storeId?: string;
   addressId: string;
-  items: CreateOrderItemInput[];
+  items?: CreateOrderItemInput[];
   paymentMethod: string;
   couponCode?: string;
+  // Alternative to a client-supplied items[] array — checks out from a
+  // server-side Cart instead (FOOD only; see cart.service.ts).
+  cartId?: string;
 }
 
 interface PreparedOrderItem {
@@ -55,11 +67,15 @@ interface PreparedOrderItem {
   name: string;
   price: number;
   quantity: number;
-  addons: IOrderItemAddon[];
+  modifiers: IOrderItemModifier[];
   itemTotal: number;
   lineSubtotal: number;
   lineDiscount: number;
   lineTax: number;
+  // FOOD only — the GLOBAL FoodProduct id this line's VendorFoodItem maps
+  // onto, for Coupon.foodItemIds scoping (see couponService.applyCoupon).
+  // Undefined for INSTAMART lines.
+  globalFoodItemId?: string;
 }
 
 function assertOrderAccess(user: JwtPayload, order: IOrder): void {
@@ -69,6 +85,10 @@ function assertOrderAccess(user: JwtPayload, order: IOrder): void {
   }
   if (user.userType === 'VENDOR') {
     if (order.vendorId?.toString() !== user.userId) throw ApiError.forbidden('You do not have access to this order', 'ORDER_FORBIDDEN');
+    return;
+  }
+  if (user.userType === 'STORE') {
+    if (order.storeId?.toString() !== user.userId) throw ApiError.forbidden('You do not have access to this order', 'ORDER_FORBIDDEN');
     return;
   }
   if (user.userType === 'DELIVERY_PARTNER') {
@@ -81,81 +101,48 @@ function assertOrderAccess(user: JwtPayload, order: IOrder): void {
 export function orderListFilter(user: JwtPayload): Record<string, unknown> {
   if (user.userType === 'CUSTOMER') return { customerId: user.userId };
   if (user.userType === 'VENDOR') return { vendorId: user.userId };
+  if (user.userType === 'STORE') return { storeId: user.userId };
   if (user.userType === 'DELIVERY_PARTNER') return { deliveryPartnerId: user.userId };
   return locationScopeFilter(user);
-}
-
-// Product price line math: `discount` and `tax` on Food/Instamart products are
-// treated as percentages — discount applies to the pre-tax line (incl. addons
-// for Food), tax applies after the discount. This is a documented judgment
-// call (the spec doesn't pin down the exact formula) — see README.
-function computeLine(unitPrice: number, quantity: number, discountPct: number, taxPct: number, addonsUnitTotal = 0) {
-  const lineSubtotal = unitPrice * quantity;
-  const addonsTotal = addonsUnitTotal * quantity;
-  const lineDiscount = lineSubtotal * (discountPct / 100);
-  const taxableBase = lineSubtotal - lineDiscount + addonsTotal;
-  const lineTax = taxableBase * (taxPct / 100);
-  const itemTotal = taxableBase + lineTax;
-  return { lineSubtotal: lineSubtotal + addonsTotal, lineDiscount, lineTax, itemTotal };
 }
 
 async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[]): Promise<PreparedOrderItem[]> {
   const prepared: PreparedOrderItem[] = [];
 
   for (const input of items) {
-    const product = await FoodProduct.findById(input.productId);
-    if (!product) throw ApiError.notFound(`Product ${input.productId} not found`, 'PRODUCT_NOT_FOUND');
-    if (product.vendorId.toString() !== vendorId) {
-      throw ApiError.badRequest('All products in an order must belong to the same vendor', 'PRODUCT_VENDOR_MISMATCH');
-    }
-    if (product.status !== GENERIC_STATUS.ACTIVE || !product.isAvailable) {
-      throw ApiError.unprocessable(`${product.name} is not currently available`, 'PRODUCT_NOT_AVAILABLE');
-    }
+    // Single source of truth for "resolve + validate + price one Food line"
+    // — shared with cart.service.ts (see foodPricing.service.ts).
+    const resolved = await resolveFoodLineItem(
+      { vendorFoodItemId: input.productId, variantId: input.variantId, modifiers: input.modifiers },
+      vendorId,
+    );
 
-    let unitPrice = product.price;
-    if (input.variantId) {
-      const variant = await FoodVariant.findById(input.variantId);
-      if (!variant || variant.productId.toString() !== product.id) {
-        throw ApiError.badRequest('Invalid variant for this product', 'INVALID_VARIANT');
-      }
-      unitPrice = variant.price;
-    }
-
-    const addonSnapshots: IOrderItemAddon[] = [];
-    let addonsUnitTotal = 0;
-    for (const addonInput of input.addons) {
-      const addon = await FoodAddon.findById(addonInput.addonId);
-      if (!addon || addon.vendorId.toString() !== vendorId) {
-        throw ApiError.badRequest('Invalid addon for this vendor', 'INVALID_ADDON');
-      }
-      addonsUnitTotal += addon.price * addonInput.quantity;
-      addonSnapshots.push({
-        addonId: addon._id,
-        name: addon.name,
-        price: addon.price,
-        quantity: addonInput.quantity,
-      });
-    }
-
+    // The old FoodProduct carried its own discount/tax percentages; the
+    // Stage 2 split (see plan) doesn't reintroduce either field on
+    // VendorFoodItem, so FOOD lines no longer apply an item-level
+    // discount/tax — platform-level discounting still happens via Coupon at
+    // the order level. Flagged as a deliberate gap (not silently guessed)
+    // pending a later stage's spec for Food item tax/discount handling.
     const { lineSubtotal, lineDiscount, lineTax, itemTotal } = computeLine(
-      unitPrice,
+      resolved.unitPrice,
       input.quantity,
-      product.discount,
-      product.tax,
-      addonsUnitTotal,
+      0,
+      0,
+      resolved.modifiersUnitTotal,
     );
 
     prepared.push({
-      productId: product.id,
+      productId: resolved.vendorFoodItem.id,
       variantId: input.variantId,
-      name: product.name,
-      price: unitPrice,
+      name: resolved.name,
+      price: resolved.unitPrice,
       quantity: input.quantity,
-      addons: addonSnapshots,
+      modifiers: resolved.modifiers,
       itemTotal,
       lineSubtotal,
       lineDiscount,
       lineTax,
+      globalFoodItemId: resolved.globalItem.id,
     });
   }
 
@@ -166,8 +153,8 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
   const prepared: PreparedOrderItem[] = [];
 
   for (const input of items) {
-    if (input.variantId || input.addons.length > 0) {
-      throw ApiError.badRequest('Variants and addons are not supported for Instamart items', 'INSTAMART_ITEM_UNSUPPORTED');
+    if (input.modifiers.length > 0) {
+      throw ApiError.badRequest('Modifiers are not supported for Instamart items', 'INSTAMART_MODIFIER_UNSUPPORTED');
     }
 
     const product = await InstamartProduct.findById(input.productId);
@@ -176,29 +163,58 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       throw ApiError.badRequest('All products in an order must belong to the same store', 'PRODUCT_STORE_MISMATCH');
     }
     if (product.status !== GENERIC_STATUS.ACTIVE) {
-      throw ApiError.unprocessable(`${product.name} is not currently available`, 'PRODUCT_NOT_AVAILABLE');
+      throw ApiError.unprocessable('This product is not currently available', 'PRODUCT_NOT_AVAILABLE');
+    }
+
+    // name/tax now live on the shared Global Product this listing maps onto
+    // (see instamartProduct.service.ts) — a store's own listing can be ACTIVE
+    // while the catalog entry it points at is still PENDING/REJECTED/INACTIVE
+    // (e.g. a store-submitted product awaiting approval), so that must be
+    // re-checked here too, not just the mapping's own status above.
+    const globalProduct = await InstamartGlobalProduct.findById(product.productId);
+    if (!globalProduct || globalProduct.approvalStatus !== APPROVAL_STATUS.APPROVED || globalProduct.status !== GENERIC_STATUS.ACTIVE) {
+      throw ApiError.unprocessable('This product is not currently available', 'PRODUCT_NOT_AVAILABLE');
+    }
+
+    // A variant (e.g. "500g" vs "1kg") is just a name + mrp/sellingPrice on
+    // top of the product — it shares the product's own stock rather than
+    // tracking its own (see instamartProduct.service.ts). The listing's own
+    // sellingPrice/mrp (its own pack size/unit) is always a valid, orderable
+    // choice in its own right, same as any named variant — variants are
+    // additional pack-size options alongside it, not a replacement for it.
+    let unitPrice = product.sellingPrice;
+    if (input.variantId) {
+      const variant = await InstamartVariant.findById(input.variantId);
+      if (!variant || variant.productId.toString() !== product.id) {
+        throw ApiError.badRequest('Invalid variant for this product', 'INVALID_VARIANT');
+      }
+      if (variant.status !== GENERIC_STATUS.ACTIVE) {
+        throw ApiError.unprocessable(`${globalProduct.name} (${variant.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
+      }
+      unitPrice = variant.sellingPrice;
     }
 
     // Authoritative stock check happens again inside the transaction below;
     // this pre-check just fails fast for the common case.
     const inventory = await Inventory.findOne({ storeId, productId: product.id });
     if (!inventory || inventory.currentStock - inventory.reservedStock < input.quantity) {
-      throw ApiError.unprocessable(`${product.name} does not have enough stock`, 'INSUFFICIENT_STOCK');
+      throw ApiError.unprocessable(`${globalProduct.name} does not have enough stock`, 'INSUFFICIENT_STOCK');
     }
 
     const { lineSubtotal, lineDiscount, lineTax, itemTotal } = computeLine(
-      product.sellingPrice,
+      unitPrice,
       input.quantity,
       product.discount,
-      product.tax,
+      globalProduct.gst,
     );
 
     prepared.push({
       productId: product.id,
-      name: product.name,
-      price: product.sellingPrice,
+      variantId: input.variantId,
+      name: globalProduct.name,
+      price: unitPrice,
       quantity: input.quantity,
-      addons: [],
+      modifiers: [],
       itemTotal,
       lineSubtotal,
       lineDiscount,
@@ -213,6 +229,38 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   const customer = await Customer.findById(customerId);
   if (!customer) throw ApiError.notFound('Customer not found', 'CUSTOMER_NOT_FOUND');
 
+  // Alternative to a client-supplied items[] array — checkout from a
+  // server-side Cart instead (FOOD only; see cart.service.ts). The cart is
+  // single-vendor by construction (enforced in cart.service.ts's addItem), so
+  // businessType/vendorId/items are derived from it here and any
+  // client-supplied values for those fields are ignored. The existing
+  // inline-items path below is completely unchanged for callers that don't
+  // pass cartId.
+  let businessType = data.businessType;
+  let vendorIdInput = data.vendorId;
+  let items = data.items ?? [];
+
+  if (data.cartId) {
+    const cart = await Cart.findOne({ _id: data.cartId, customerId });
+    if (!cart) throw ApiError.notFound('Cart not found', 'CART_NOT_FOUND');
+    const cartItems = await CartItem.find({ cartId: cart.id });
+    if (!cart.vendorId || cartItems.length === 0) {
+      throw ApiError.badRequest('Cart is empty', 'CART_EMPTY');
+    }
+
+    businessType = BUSINESS_TYPES.FOOD;
+    vendorIdInput = cart.vendorId.toString();
+    items = cartItems.map((item) => ({
+      productId: item.vendorFoodItemId.toString(),
+      variantId: item.variantId?.toString(),
+      quantity: item.quantity,
+      modifiers: item.selectedModifierOptionIds.map((id) => ({ modifierOptionId: id.toString(), quantity: 1 })),
+    }));
+  }
+
+  if (!businessType) throw ApiError.badRequest('businessType is required', 'BUSINESS_TYPE_REQUIRED');
+  if (items.length === 0) throw ApiError.badRequest('At least one item is required', 'ITEMS_REQUIRED');
+
   const address = await CustomerAddress.findOne({ _id: data.addressId, customerId });
   if (!address) throw ApiError.notFound('Address not found', 'ADDRESS_NOT_FOUND');
 
@@ -221,7 +269,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
     throw ApiError.unprocessable('This location is not currently serviceable', 'LOCATION_NOT_ACTIVE');
   }
 
-  const serviceability = await checkServiceability(address.latitude, address.longitude, data.businessType);
+  const serviceability = await checkServiceability(address.latitude, address.longitude, businessType);
   if (!serviceability.serviceable) {
     throw ApiError.unprocessable('This address is not currently serviceable', serviceability.reason ?? 'NOT_SERVICEABLE');
   }
@@ -230,8 +278,8 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   let vendorId: string | undefined;
   let storeId: string | undefined;
 
-  if (data.businessType === BUSINESS_TYPES.FOOD) {
-    const vendor = await Vendor.findById(data.vendorId);
+  if (businessType === BUSINESS_TYPES.FOOD) {
+    const vendor = await Vendor.findById(vendorIdInput);
     if (!vendor) throw ApiError.notFound('Vendor not found', 'VENDOR_NOT_FOUND');
     if (vendor.status !== VENDOR_STATUS.ACTIVE || vendor.approvalStatus !== APPROVAL_STATUS.APPROVED) {
       throw ApiError.unprocessable('This vendor is not currently active', 'VENDOR_NOT_ACTIVE');
@@ -252,9 +300,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   }
 
   const preparedItems =
-    data.businessType === BUSINESS_TYPES.FOOD
-      ? await prepareFoodItems(vendorId!, data.items)
-      : await prepareInstamartItems(storeId!, data.items);
+    businessType === BUSINESS_TYPES.FOOD ? await prepareFoodItems(vendorId!, items) : await prepareInstamartItems(storeId!, items);
 
   const subtotal = preparedItems.reduce((sum, i) => sum + i.lineSubtotal, 0);
   const discount = preparedItems.reduce((sum, i) => sum + i.lineDiscount, 0);
@@ -262,6 +308,29 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   const deliveryFee = subtotal >= zone.freeDeliveryAbove ? 0 : zone.deliveryFee;
   const packagingFee = 0;
   const platformFee = 0;
+
+  // Commission snapshot (Stage 4) — resolved and captured NOW, at order
+  // creation, rather than re-resolved live at settlement time, so a later
+  // change to the vendor's/store's/location's commission config never
+  // retroactively changes what an already-placed order owes. Base matches
+  // settlement.service.ts's "gross = subtotal - discount" for vendor/store
+  // payees (delivery partners have no Commission entity of their own).
+  // `resolveCommission` returning null means 100% payable, no commission —
+  // all four fields stay unset.
+  const commissionBaseAmount = subtotal - discount;
+  const commission = await commissionService.resolveCommission({
+    locationId: location.id,
+    vendorId,
+    storeId,
+    businessType,
+  });
+  const commissionType = commission?.type;
+  const commissionRate = commission?.value;
+  const commissionAmount = commission
+    ? commission.type === DISCOUNT_TYPES.PERCENTAGE
+      ? commissionBaseAmount * (commission.value / 100)
+      : commission.value
+    : undefined;
 
   const session = await mongoose.startSession();
   try {
@@ -275,9 +344,12 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       let couponCode: string | undefined;
       let couponDiscount = 0;
       if (data.couponCode) {
+        const foodItemIds = preparedItems
+          .map((item) => item.globalFoodItemId)
+          .filter((id): id is string => Boolean(id));
         const result = await couponService.applyCoupon(
           data.couponCode,
-          { customerId, locationId: location.id, businessType: data.businessType, vendorId, storeId, subtotal },
+          { customerId, locationId: location.id, businessType, vendorId, storeId, subtotal, foodItemIds },
           session,
         );
         couponCode = result.coupon.code;
@@ -285,7 +357,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       }
       const total = subtotal - discount + tax + deliveryFee + packagingFee + platformFee - couponDiscount;
 
-      if (data.businessType === BUSINESS_TYPES.INSTAMART) {
+      if (businessType === BUSINESS_TYPES.INSTAMART) {
         for (const item of preparedItems) {
           const inventory = await Inventory.findOne({ storeId, productId: item.productId }).session(session);
           if (!inventory || inventory.currentStock - inventory.reservedStock < item.quantity) {
@@ -319,7 +391,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           {
             orderNumber: generateOrderNumber(),
             locationId: location.id,
-            businessType: data.businessType,
+            businessType,
             customerId,
             vendorId,
             storeId,
@@ -332,6 +404,10 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
             packagingFee,
             platformFee,
             total,
+            commissionType,
+            commissionRate,
+            commissionBaseAmount: commission ? commissionBaseAmount : undefined,
+            commissionAmount,
             paymentMethod: data.paymentMethod,
             paymentStatus: PAYMENT_STATUS.PENDING,
             deliveryAddress: {
@@ -373,6 +449,23 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
         order.paymentId = payment.id;
         order.paymentStatus = PAYMENT_STATUS.PAID;
         await order.save({ session });
+
+        // RAZORPAY's equivalent ledger entry is recorded from
+        // payment.service.ts's markPaymentPaid (the one shared function both
+        // the client-verify and webhook paths already call) — this is the
+        // WALLET-only counterpart, since that path never goes through
+        // markPaymentPaid.
+        await ledgerService.recordTransaction(
+          {
+            orderId: order.id,
+            vendorId,
+            storeId,
+            type: TRANSACTION_TYPE.ORDER_PAYMENT,
+            amount: total,
+            direction: TRANSACTION_DIRECTION.CREDIT,
+          },
+          session,
+        );
       }
 
       await OrderItem.insertMany(
@@ -383,7 +476,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           name: item.name,
           price: item.price,
           quantity: item.quantity,
-          addons: item.addons,
+          modifiers: item.modifiers,
           itemTotal: item.itemTotal,
         })),
         { session },
@@ -400,6 +493,13 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
         ],
         { session },
       );
+
+      // Checked out from a Cart — clear it atomically with the order that
+      // consumed it (a failed order creation must not empty the cart).
+      if (data.cartId) {
+        await CartItem.deleteMany({ cartId: data.cartId }).session(session);
+        await Cart.updateOne({ _id: data.cartId }, { vendorId: null }).session(session);
+      }
 
       createdOrder = order;
     });
@@ -439,17 +539,35 @@ async function withCustomer(order: IOrder): Promise<Record<string, unknown>> {
   const plain = order.toObject();
   const customer = await Customer.findById(order.customerId).select('name phone');
   if (customer) plain.customer = { _id: customer._id, name: customer.name, phone: customer.phone };
+  const counts = await itemCountsByOrderId([order._id]);
+  plain.itemCount = counts.get(order._id.toString()) ?? 0;
   return plain;
+}
+
+// OrderItem lives in its own collection (not embedded on Order), so list/
+// history views need a cheap batch count to show "N items" without a
+// separate round trip per order.
+async function itemCountsByOrderId(orderIds: mongoose.Types.ObjectId[]): Promise<Map<string, number>> {
+  if (orderIds.length === 0) return new Map();
+  const counts = await OrderItem.aggregate([
+    { $match: { orderId: { $in: orderIds } } },
+    { $group: { _id: '$orderId', count: { $sum: 1 } } },
+  ]);
+  return new Map(counts.map((c) => [c._id.toString(), c.count as number]));
 }
 
 async function withCustomers(orders: IOrder[]): Promise<Record<string, unknown>[]> {
   const customerIds = [...new Set(orders.map((o) => o.customerId.toString()))];
-  const customers = await Customer.find({ _id: { $in: customerIds } }).select('name phone');
+  const [customers, itemCounts] = await Promise.all([
+    Customer.find({ _id: { $in: customerIds } }).select('name phone'),
+    itemCountsByOrderId(orders.map((o) => o._id)),
+  ]);
   const customerById = new Map(customers.map((c) => [c._id.toString(), c]));
   return orders.map((order) => {
     const plain = order.toObject();
     const customer = customerById.get(order.customerId.toString());
     if (customer) plain.customer = { _id: customer._id, name: customer.name, phone: customer.phone };
+    plain.itemCount = itemCounts.get(order._id.toString()) ?? 0;
     return plain;
   });
 }
@@ -525,6 +643,14 @@ export async function updateOrderStatus(id: string, newStatus: string, user: Jwt
     changedBy: user.userId,
     changedByType: user.userType,
   });
+
+  // Reachable here for a direct admin PATCH straight to DELIVERED; the
+  // expected real-world path (a delivery reaching DELIVERED) instead goes
+  // through delivery.service.ts's updateDeliveryStatus, which calls the same
+  // shared helper — see ledger.service.ts's recordOrderCommissionLedger.
+  if (newStatus === 'DELIVERED') {
+    await ledgerService.recordOrderCommissionLedger(order);
+  }
 
   await notifyOrderStatusChange(order, newStatus);
 
@@ -603,7 +729,10 @@ export async function cancelOrder(id: string, reason: string, user: JwtPayload) 
   // Razorpay would be its own problem). See refund.service for the
   // fail-open behavior (order stays cancelled either way).
   if (order.paymentStatus === PAYMENT_STATUS.PAID) {
-    await refundService.autoRefundForCancelledOrder(order, `Order cancelled: ${reason}`);
+    // The REFUND_REASON enum is derived internally from order.cancelledBy
+    // (set just above, inside the transaction) — `reason` here is just the
+    // free-text detail (see refund.service.ts's autoRefundForCancelledOrder).
+    await refundService.autoRefundForCancelledOrder(order, reason);
   }
 
   await notifyOrderStatusChange(order, 'CANCELLED');

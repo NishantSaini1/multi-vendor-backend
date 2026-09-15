@@ -4,25 +4,65 @@ import { sendSuccess, buildPagination } from '../utils/ApiResponse';
 import { parsePagination } from '../utils/pagination';
 import { ApiError } from '../utils/ApiError';
 import { locationScopeFilter } from '../middleware/rbac.middleware';
+import { VENDOR_STATUS, APPROVAL_STATUS } from '../constants/enums';
 import * as vendorService from '../services/vendor.service';
+import { IVendor } from '../models/Vendor';
 
 function requireUser(req: Request) {
   if (!req.user) throw ApiError.unauthorized();
   return req.user;
 }
 
+// The Vendor document carries operator PII (owner name, phone, email) and tax
+// IDs (GST/FSSAI/PAN) that the Admin Panel and Vendor App need but a customer
+// browsing restaurants never should see — trim the response down to the
+// public "restaurant card / restaurant detail" fields for CUSTOMER callers.
+function toCustomerVendorView(vendor: IVendor) {
+  return {
+    id: vendor._id,
+    locationId: vendor.locationId,
+    restaurantName: vendor.restaurantName,
+    description: vendor.description,
+    logo: vendor.logo,
+    coverImage: vendor.coverImage,
+    address: vendor.address,
+    latitude: vendor.latitude,
+    longitude: vendor.longitude,
+    serviceRadius: vendor.serviceRadius,
+    vendorTypeIds: vendor.vendorTypeIds,
+    rating: vendor.rating,
+    ratingCount: vendor.ratingCount,
+    status: vendor.status,
+    isOpen: vendor.isOpen,
+    temporaryClosure: vendor.temporaryClosure,
+    createdAt: vendor.createdAt,
+  };
+}
+
+function serializeForUser(vendor: IVendor, userType: string) {
+  return userType === 'CUSTOMER' ? toCustomerVendorView(vendor) : vendor;
+}
+
 export const list = catchAsync(async (req: Request, res: Response) => {
   const user = requireUser(req);
   const pagination = parsePagination(req, { restaurantName: 1 });
+  const isCustomer = user.userType === 'CUSTOMER';
 
   const filter: Record<string, unknown> = { ...locationScopeFilter(user) };
   if (req.query.locationId) filter.locationId = req.query.locationId;
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.approvalStatus) filter.approvalStatus = req.query.approvalStatus;
+  if (isCustomer) {
+    // Customers only ever browse live, approved restaurants.
+    filter.status = VENDOR_STATUS.ACTIVE;
+    filter.approvalStatus = APPROVAL_STATUS.APPROVED;
+  } else {
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.approvalStatus) filter.approvalStatus = req.query.approvalStatus;
+  }
   if (req.query.search) filter.restaurantName = { $regex: String(req.query.search), $options: 'i' };
 
   const { items, total } = await vendorService.listVendors(filter, pagination);
-  sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
+  const data = isCustomer ? items.map(toCustomerVendorView) : items;
+  sendSuccess(res, data, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });
 
 export const create = catchAsync(async (req: Request, res: Response) => {
@@ -31,8 +71,9 @@ export const create = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const getById = catchAsync(async (req: Request, res: Response) => {
-  const vendor = await vendorService.getVendorById(req.params.id, requireUser(req));
-  sendSuccess(res, vendor);
+  const user = requireUser(req);
+  const vendor = await vendorService.getVendorById(req.params.id, user);
+  sendSuccess(res, serializeForUser(vendor, user.userType));
 });
 
 export const update = catchAsync(async (req: Request, res: Response) => {
@@ -76,7 +117,7 @@ export const dashboard = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const products = catchAsync(async (req: Request, res: Response) => {
-  const pagination = parsePagination(req, { sortOrder: 1 });
+  const pagination = parsePagination(req, { createdAt: -1 });
   const { items, total } = await vendorService.getVendorProducts(req.params.id, requireUser(req), pagination);
   sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });

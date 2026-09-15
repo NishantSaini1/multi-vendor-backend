@@ -15,7 +15,7 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   const pagination = parsePagination(req);
 
   const filter: Record<string, unknown> = inventoryService.inventoryListFilter(user);
-  if (req.query.storeId) filter.storeId = req.query.storeId;
+  if (req.query.storeId && user.userType !== 'STORE') filter.storeId = req.query.storeId;
   if (req.query.status) filter.status = req.query.status;
 
   const { items, total } = await inventoryService.listInventory(filter, pagination);
@@ -54,7 +54,7 @@ export const lowStock = catchAsync(async (req: Request, res: Response) => {
   const user = requireUser(req);
   const pagination = parsePagination(req);
   const filter: Record<string, unknown> = inventoryService.inventoryListFilter(user);
-  if (req.query.storeId) filter.storeId = req.query.storeId;
+  if (req.query.storeId && user.userType !== 'STORE') filter.storeId = req.query.storeId;
 
   const { items, total } = await inventoryService.getLowStockInventory(filter, pagination);
   sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
@@ -64,7 +64,7 @@ export const outOfStock = catchAsync(async (req: Request, res: Response) => {
   const user = requireUser(req);
   const pagination = parsePagination(req);
   const filter: Record<string, unknown> = inventoryService.inventoryListFilter(user);
-  if (req.query.storeId) filter.storeId = req.query.storeId;
+  if (req.query.storeId && user.userType !== 'STORE') filter.storeId = req.query.storeId;
 
   const { items, total } = await inventoryService.getOutOfStockInventory(filter, pagination);
   sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));

@@ -5,6 +5,7 @@ import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendorType } from './helpers/foodFixtures';
 
 describe('Vendor admin module', () => {
   let locationA: string;
@@ -12,10 +13,14 @@ describe('Vendor admin module', () => {
   let superAdminToken: string;
   let locationAdminToken: string; // scoped to locationA only
   let foodAdminToken: string; // role-scoped, no locationIds restriction
+  let vendorTypeId: string;
 
   beforeAll(async () => {
     await startTestDatabase();
     await redisClient.flushdb();
+
+    const vendorType = await createTestVendorType();
+    vendorTypeId = vendorType.id;
 
     const locA = await Location.create({
       name: 'Location A',
@@ -77,6 +82,7 @@ describe('Vendor admin module', () => {
     address: '123 Test Street',
     latitude: 1,
     longitude: 1,
+    vendorTypeIds: [vendorTypeId],
   });
 
   it('rejects vendor creation for a location the admin cannot access', async () => {

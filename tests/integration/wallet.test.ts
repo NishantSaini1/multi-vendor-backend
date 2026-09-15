@@ -4,12 +4,11 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
-import { Vendor } from '../../src/models/Vendor';
 import { FoodCategory } from '../../src/models/FoodCategory';
-import { FoodProduct } from '../../src/models/FoodProduct';
 import { Wallet } from '../../src/models/Wallet';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor, createOrderableFoodItem } from './helpers/foodFixtures';
 
 describe('Wallet: balance, transactions, admin adjustment, WALLET as a payment method', () => {
   let locationId: string;
@@ -72,7 +71,7 @@ describe('Wallet: balance, transactions, admin adjustment, WALLET as a payment m
       .send({ locationId, address: '1 Wallet Lane', pincode: '110088', latitude: 12, longitude: 12 });
     addressId = addressRes.body.data._id;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId,
       restaurantName: 'Wallet Restaurant',
       ownerName: 'Owner',
@@ -88,16 +87,9 @@ describe('Wallet: balance, transactions, admin adjustment, WALLET as a payment m
     vendorId = vendor.id;
 
     const category = await FoodCategory.create({ name: 'Wallet Food Category', status: 'ACTIVE' });
-    const product = await FoodProduct.create({
-      locationId,
-      vendorId,
-      categoryId: category.id,
+    const product = await createOrderableFoodItem(vendorId, category.id, {
       name: 'Wallet Thali',
       price: 100,
-      discount: 0,
-      tax: 0,
-      isAvailable: true,
-      status: 'ACTIVE',
     });
     productId = product.id;
   });
@@ -120,7 +112,7 @@ describe('Wallet: balance, transactions, admin adjustment, WALLET as a payment m
     const res = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, modifiers: [] }] });
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('INSUFFICIENT_WALLET_BALANCE');
   });
@@ -168,7 +160,7 @@ describe('Wallet: balance, transactions, admin adjustment, WALLET as a payment m
     const res = await request(app)
       .post('/api/v1/orders')
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, addons: [] }] });
+      .send({ businessType: 'FOOD', vendorId, addressId, paymentMethod: 'WALLET', items: [{ productId, quantity: 1, modifiers: [] }] });
     expect(res.status).toBe(201);
     expect(res.body.data.paymentStatus).toBe('PAID');
     expect(res.body.data.paymentId).toBeTruthy();

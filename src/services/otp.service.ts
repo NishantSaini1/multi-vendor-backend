@@ -21,26 +21,69 @@ export interface SendOtpResult {
   devOtp?: string;
 }
 
+// Never honored in production, regardless of TEST_OTP_PHONES config — this
+// exists purely so a fixed number can be re-verified with the same OTP across
+// manual/Postman test runs instead of fetching a fresh devOtp every time.
+function isTestPhone(phone: string): boolean {
+  return !env.isProduction && env.TEST_OTP_PHONES_LIST.includes(phone);
+}
+
 export async function sendOtp(phone: string): Promise<SendOtpResult> {
-  const onCooldown = await redisClient.get(cooldownKey(phone));
+  console.log('🔥 sendOtp called:', phone);
+
+  const cooldownKeyValue = cooldownKey(phone);
+  console.log('🔥 cooldown key:', cooldownKeyValue);
+
+  const onCooldown = await redisClient.get(cooldownKeyValue);
+  console.log('🔥 onCooldown:', onCooldown);
+
   if (onCooldown) {
-    throw ApiError.tooManyRequests('Please wait before requesting another OTP', 'OTP_COOLDOWN_ACTIVE');
+    console.log('❌ OTP blocked because cooldown is active');
+
+    throw ApiError.tooManyRequests(
+      'Please wait before requesting another OTP',
+      'OTP_COOLDOWN_ACTIVE'
+    );
   }
 
-  const otp = generateOtp();
+  console.log('🔥 TEST_OTP_CODE:', env.TEST_OTP_CODE);
+  console.log('🔥 TEST_OTP_PHONES_LIST:', env.TEST_OTP_PHONES_LIST);
+  console.log('🔥 isProduction:', env.isProduction);
+  console.log('🔥 isTestPhone:', isTestPhone(phone));
+
+  const otp = isTestPhone(phone)
+    ? env.TEST_OTP_CODE
+    : generateOtp();
+
+  console.log('🔥 Generated OTP:', otp);
+
   const hashed = hashOtp(otp, phone);
   const expirySeconds = env.OTP_EXPIRY_MINUTES * 60;
 
-  await redisClient.set(otpKey(phone), hashed, 'EX', expirySeconds);
-  await redisClient.set(cooldownKey(phone), '1', 'EX', env.OTP_RESEND_COOLDOWN_SECONDS);
+  await redisClient.set(
+    otpKey(phone),
+    hashed,
+    'EX',
+    expirySeconds
+  );
+
+  await redisClient.set(
+    cooldownKey(phone),
+    '1',
+    'EX',
+    env.OTP_RESEND_COOLDOWN_SECONDS
+  );
+
   await redisClient.del(attemptsKey(phone));
 
-  // Never log the OTP itself in production.
   if (env.isDevelopment) {
     logger.info({ phone }, `Dev OTP generated: ${otp}`);
   }
 
-  await OtpVerification.create({ phone, purpose: 'LOGIN' });
+  await OtpVerification.create({
+    phone,
+    purpose: 'LOGIN',
+  });
 
   return {
     expiresInSeconds: expirySeconds,

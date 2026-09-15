@@ -3,9 +3,9 @@ import app from '../../src/app';
 import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
-import { Vendor } from '../../src/models/Vendor';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
+import { createTestVendor } from './helpers/foodFixtures';
 
 describe('Commission rules: GLOBAL/LOCATION/VENDOR/STORE scoping and access control', () => {
   let locationA: string;
@@ -33,7 +33,7 @@ describe('Commission rules: GLOBAL/LOCATION/VENDOR/STORE scoping and access cont
     unrestrictedFinanceToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'c.finance@example.com', password: 'Password123' })).body.data.accessToken;
     scopedFinanceToken = (await request(app).post('/api/v1/auth/admin/login').send({ email: 'c.financeb@example.com', password: 'Password123' })).body.data.accessToken;
 
-    const vendor = await Vendor.create({
+    const vendor = await createTestVendor({
       locationId: locationA,
       restaurantName: 'Commission Restaurant',
       ownerName: 'Owner',
