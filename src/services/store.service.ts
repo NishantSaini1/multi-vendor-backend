@@ -1,7 +1,8 @@
 import { Store } from '../models/Store';
 import { StoreDocument } from '../models/StoreDocument';
 import { InstamartProduct } from '../models/InstamartProduct';
-import { withGlobalProducts } from './instamartProduct.service';
+import { IInstamartGlobalProduct } from '../models/InstamartGlobalProduct';
+import { withGlobalProducts, globalProductVisible } from './instamartProduct.service';
 import { Inventory } from '../models/Inventory';
 import { Location } from '../models/Location';
 import { ApiError } from '../utils/ApiError';
@@ -11,7 +12,7 @@ import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { findMatchingZone } from './deliveryZone.service';
 import { StoreType } from '../models/StoreType';
-import { STORE_APPROVAL_STATUS, STORE_STATUS } from '../constants/enums';
+import { STORE_APPROVAL_STATUS, STORE_STATUS, GENERIC_STATUS } from '../constants/enums';
 
 export async function listStores(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -186,11 +187,23 @@ export async function getStoreProducts(id: string, user: JwtPayload, pagination:
   // one store's STORE actor see a sibling store's products/inventory too.
   assertStoreAccess(user, store);
 
+  // A customer browsing a store's shelf should only ever see listings the
+  // store still carries and whose global product is admin-approved+active —
+  // the store/admin managing the shelf needs to see everything, mirroring
+  // listInstamartProducts' customer gate in instamartProduct.service.ts.
+  const isCustomer = user.userType === 'CUSTOMER';
+  const query = isCustomer ? { storeId: id, status: GENERIC_STATUS.ACTIVE } : { storeId: id };
+
   const [items, total] = await Promise.all([
-    InstamartProduct.find({ storeId: id }).sort(pagination.sort).skip(pagination.skip).limit(pagination.limit),
-    InstamartProduct.countDocuments({ storeId: id }),
+    InstamartProduct.find(query).sort(pagination.sort).skip(pagination.skip).limit(pagination.limit),
+    InstamartProduct.countDocuments(query),
   ]);
-  return { items: await withGlobalProducts(items), total };
+
+  let enriched = await withGlobalProducts(items);
+  if (isCustomer) {
+    enriched = enriched.filter((p) => globalProductVisible((p.product as IInstamartGlobalProduct | undefined) ?? null));
+  }
+  return { items: enriched, total };
 }
 
 export async function getStoreInventory(id: string, user: JwtPayload, pagination: PaginationParams) {

@@ -31,7 +31,7 @@ const GLOBAL_PRODUCT_FIELDS =
 // product" is auto-approved (see createInstamartProduct), so this gate
 // mainly matters for a product an admin has separately marked
 // PENDING/REJECTED/INACTIVE.
-function globalProductVisible(globalProduct: Pick<IInstamartGlobalProduct, 'approvalStatus' | 'status'> | null | undefined): boolean {
+export function globalProductVisible(globalProduct: Pick<IInstamartGlobalProduct, 'approvalStatus' | 'status'> | null | undefined): boolean {
   return !!globalProduct && globalProduct.approvalStatus === APPROVAL_STATUS.APPROVED && globalProduct.status === GENERIC_STATUS.ACTIVE;
 }
 

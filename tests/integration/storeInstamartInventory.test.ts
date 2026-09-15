@@ -6,7 +6,7 @@ import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
-import { createTestStoreType } from './helpers/foodFixtures';
+import { createTestStoreType, createInstamartListing } from './helpers/foodFixtures';
 
 describe('Stores + Instamart catalog + Inventory', () => {
   let locationId: string;
@@ -225,5 +225,60 @@ describe('Stores + Instamart catalog + Inventory', () => {
       .get(`/api/v1/inventory/${inventoryId}`)
       .set('Authorization', `Bearer ${superAdminToken}`);
     expect(inventoryRes.status).toBe(404);
+  });
+
+  describe('GET /stores/:id/products (customer-facing shelf)', () => {
+    let activeListingId: string;
+    let inactiveListingId: string;
+    let customerToken: string;
+
+    beforeAll(async () => {
+      const active = await createInstamartListing(locationId, storeId, categoryId, {
+        name: 'Fresh Tomatoes',
+        unit: 'kg',
+        mrp: 45,
+        sellingPrice: 40,
+        status: 'ACTIVE',
+      });
+      activeListingId = active.id;
+
+      const inactive = await createInstamartListing(locationId, storeId, categoryId, {
+        name: 'Stale Tomatoes',
+        unit: 'kg',
+        mrp: 45,
+        sellingPrice: 40,
+        status: 'INACTIVE',
+      });
+      inactiveListingId = inactive.id;
+
+      const sendOtp = await request(app).post('/api/v1/auth/customer/send-otp').send({ phone: '9822200050' });
+      const verify = await request(app)
+        .post('/api/v1/auth/customer/verify-otp')
+        .send({ phone: '9822200050', otp: sendOtp.body.data.devOtp });
+      customerToken = verify.body.data.accessToken;
+    });
+
+    it('shows every listing, global-product-enriched, to the store/admin', async () => {
+      const res = await request(app)
+        .get(`/api/v1/stores/${storeId}/products`)
+        .set('Authorization', `Bearer ${superAdminToken}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.data.map((p: { _id: string }) => p._id);
+      expect(ids).toEqual(expect.arrayContaining([activeListingId, inactiveListingId]));
+      const item = res.body.data.find((p: { _id: string }) => p._id === activeListingId);
+      expect(item.name).toBe('Fresh Tomatoes');
+    });
+
+    it('hides inactive listings from a customer but still enriches the active ones', async () => {
+      const res = await request(app)
+        .get(`/api/v1/stores/${storeId}/products`)
+        .set('Authorization', `Bearer ${customerToken}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.data.map((p: { _id: string }) => p._id);
+      expect(ids).toContain(activeListingId);
+      expect(ids).not.toContain(inactiveListingId);
+      const item = res.body.data.find((p: { _id: string }) => p._id === activeListingId);
+      expect(item.name).toBe('Fresh Tomatoes');
+    });
   });
 });
