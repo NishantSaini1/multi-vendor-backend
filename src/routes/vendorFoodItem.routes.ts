@@ -28,6 +28,13 @@ import {
 const router = Router({ mergeParams: true });
 
 const access = authenticate('ADMIN', 'VENDOR');
+// A customer viewing one item's detail (spec section 20) needs its own
+// listing (price/mrp/availability) plus its variants and modifier groups/
+// options — the vendor-wide list stays vendor/admin-only (a customer browses
+// a vendor's whole menu via GET /vendors/:id/products instead, which already
+// embeds price + the populated global item and filters to
+// ACTIVE/AVAILABLE — see vendor.service.ts's getVendorProducts).
+const readAccess = authenticate('ADMIN', 'VENDOR', 'CUSTOMER');
 
 router.get('/', access, requirePermission(PERMISSIONS.VENDOR_FOOD_ITEM_VIEW), validate(vendorIdParamSchema), controller.list);
 router.post(
@@ -39,7 +46,7 @@ router.post(
 );
 router.get(
   '/:id',
-  access,
+  readAccess,
   requirePermission(PERMISSIONS.VENDOR_FOOD_ITEM_VIEW),
   validate(vendorFoodItemIdParamSchema),
   controller.getById,
@@ -68,7 +75,7 @@ router.patch(
 
 router.get(
   '/:id/variants',
-  access,
+  readAccess,
   requirePermission(PERMISSIONS.VENDOR_FOOD_ITEM_VIEW),
   validate(vendorFoodItemIdParamSchema),
   controller.listVariants,
@@ -97,7 +104,7 @@ router.delete(
 
 router.get(
   '/:id/modifier-groups',
-  access,
+  readAccess,
   requirePermission(PERMISSIONS.VENDOR_FOOD_ITEM_VIEW),
   validate(vendorFoodItemIdParamSchema),
   controller.listModifierGroups,
@@ -126,7 +133,7 @@ router.delete(
 
 router.get(
   '/:id/modifier-groups/:groupId/options',
-  access,
+  readAccess,
   requirePermission(PERMISSIONS.VENDOR_FOOD_ITEM_VIEW),
   validate(modifierGroupParamsSchema),
   controller.listModifierOptions,

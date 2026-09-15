@@ -219,5 +219,64 @@ describe('Vendor admin module', () => {
       expect(item.globalFoodItemId.name).toBe('Tikki Burger');
       expect(item.globalFoodItemId.foodType).toBe('VEG');
     });
+
+    describe('a customer viewing one item detail (variants, modifier groups)', () => {
+      let variantId: string;
+      let modifierGroupId: string;
+
+      beforeAll(async () => {
+        const variantRes = await request(app)
+          .post(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}/variants`)
+          .set('Authorization', `Bearer ${foodAdminToken}`)
+          .send({ name: 'Large', price: 120 });
+        variantId = variantRes.body.data._id;
+
+        const groupRes = await request(app)
+          .post(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}/modifier-groups`)
+          .set('Authorization', `Bearer ${foodAdminToken}`)
+          .send({ name: 'Choose Sauce', minSelection: 1, maxSelection: 1, required: true });
+        modifierGroupId = groupRes.body.data._id;
+
+        await request(app)
+          .post(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}/modifier-groups/${modifierGroupId}/options`)
+          .set('Authorization', `Bearer ${foodAdminToken}`)
+          .send({ name: 'Extra Cheese', price: 20 });
+      });
+
+      it('lets a customer fetch the item itself, its variants, and its modifier groups/options', async () => {
+        const itemRes = await request(app)
+          .get(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}`)
+          .set('Authorization', `Bearer ${customerToken}`);
+        expect(itemRes.status).toBe(200);
+        expect(itemRes.body.data.globalFoodItemId.name).toBe('Tikki Burger');
+
+        const variantsRes = await request(app)
+          .get(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}/variants`)
+          .set('Authorization', `Bearer ${customerToken}`);
+        expect(variantsRes.status).toBe(200);
+        expect(variantsRes.body.data.map((v: { _id: string }) => v._id)).toContain(variantId);
+
+        const groupsRes = await request(app)
+          .get(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}/modifier-groups`)
+          .set('Authorization', `Bearer ${customerToken}`);
+        expect(groupsRes.status).toBe(200);
+        expect(groupsRes.body.data).toHaveLength(1);
+        expect(groupsRes.body.data[0].name).toBe('Choose Sauce');
+
+        const optionsRes = await request(app)
+          .get(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}/modifier-groups/${modifierGroupId}/options`)
+          .set('Authorization', `Bearer ${customerToken}`);
+        expect(optionsRes.status).toBe(200);
+        expect(optionsRes.body.data[0].name).toBe('Extra Cheese');
+      });
+
+      it('still rejects a customer trying to create a variant (read-only access)', async () => {
+        const res = await request(app)
+          .post(`/api/v1/vendors/${vendorId}/food-items/${availableItemId}/variants`)
+          .set('Authorization', `Bearer ${customerToken}`)
+          .send({ name: 'Small', price: 60 });
+        expect(res.status).toBe(403);
+      });
+    });
   });
 });
