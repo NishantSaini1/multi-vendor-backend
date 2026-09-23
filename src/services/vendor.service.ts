@@ -114,7 +114,12 @@ export async function updateVendor(id: string, data: Record<string, unknown>, us
   if (user.userType === 'VENDOR') delete payload.locationId;
 
   Object.assign(vendor, payload);
-  await vendor.save();
+  // Validate only the fields this request changed. Vendors created before
+  // vendorTypeIds replaced the free-text `cuisines` array have no
+  // vendorTypeIds, so a full-document validation failed *every* PATCH — even
+  // a bare { isOpen } open/close toggle — with "Validation failed". Anything
+  // the request does set (including vendorTypeIds itself) is still validated.
+  await vendor.save({ validateModifiedOnly: true });
   return vendor;
 }
 

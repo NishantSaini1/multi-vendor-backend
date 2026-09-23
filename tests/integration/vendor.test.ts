@@ -7,6 +7,8 @@ import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
 import { createTestVendorType, createOrderableFoodItem } from './helpers/foodFixtures';
 import { FoodCategory } from '../../src/models/FoodCategory';
+import { Vendor } from '../../src/models/Vendor';
+import { Types } from 'mongoose';
 
 describe('Vendor admin module', () => {
   let locationA: string;
@@ -161,6 +163,54 @@ describe('Vendor admin module', () => {
   it('rejects an unauthenticated request', async () => {
     const res = await request(app).get('/api/v1/vendors');
     expect(res.status).toBe(401);
+  });
+
+  describe('a legacy vendor created before vendorTypeIds existed', () => {
+    let legacyVendorId: string;
+    let legacyVendorToken: string;
+
+    beforeAll(async () => {
+      const created = await request(app)
+        .post('/api/v1/vendors')
+        .set('Authorization', `Bearer ${superAdminToken}`)
+        .send(vendorPayload(locationA, '9811100099'));
+      legacyVendorId = created.body.data._id;
+      // Mirror a pre-migration record: free-text cuisines, no vendorTypeIds.
+      // Raw collection write so schema validation can't block the setup.
+      await Vendor.collection.updateOne(
+        { _id: new Types.ObjectId(legacyVendorId) },
+        { $unset: { vendorTypeIds: '' }, $set: { cuisines: ['Indian'] } },
+      );
+      legacyVendorToken = (
+        await request(app).post('/api/v1/auth/vendor/login').send({ identifier: '9811100099', password: 'VendorPass123' })
+      ).body.data.accessToken;
+    });
+
+    it('can still toggle open/closed (and set a temporary closure) on its own record', async () => {
+      const open = await request(app)
+        .patch(`/api/v1/vendors/${legacyVendorId}`)
+        .set('Authorization', `Bearer ${legacyVendorToken}`)
+        .send({ isOpen: true, temporaryClosure: null });
+      expect(open.status).toBe(200);
+      expect(open.body.data.isOpen).toBe(true);
+
+      const reopensAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+      const closed = await request(app)
+        .patch(`/api/v1/vendors/${legacyVendorId}`)
+        .set('Authorization', `Bearer ${legacyVendorToken}`)
+        .send({ isOpen: false, temporaryClosure: { reopensAt } });
+      expect(closed.status).toBe(200);
+      expect(closed.body.data.isOpen).toBe(false);
+      expect(new Date(closed.body.data.temporaryClosure.reopensAt).toISOString()).toBe(reopensAt);
+    });
+
+    it('still validates vendorTypeIds when the request actually sets it', async () => {
+      const res = await request(app)
+        .patch(`/api/v1/vendors/${legacyVendorId}`)
+        .set('Authorization', `Bearer ${legacyVendorToken}`)
+        .send({ vendorTypeIds: [] });
+      expect(res.status).toBe(422);
+    });
   });
 
   describe('GET /vendors/:id/products', () => {
