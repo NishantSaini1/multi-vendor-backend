@@ -2,11 +2,14 @@ import { Schema, model, Document, Types } from 'mongoose';
 import { GENERIC_STATUS } from '../constants/enums';
 import { slugify } from '../utils/slug';
 
-// Global, admin-managed — a subcategory always belongs to a global
-// FoodCategory (see FoodCategory.ts); a vendor's ability to actually use it is
-// controlled separately via VendorCatalogAccess.
+// Same GLOBAL (vendorId: null, admin-managed) vs VENDOR-OWNED (vendorId set)
+// split as FoodCategory.ts. A vendor-owned subcategory may sit under a global
+// category or under that same vendor's own category — never under another
+// vendor's. A subcategory under a vendor-owned category is always owned by
+// that vendor too (see foodSubcategory.service.ts).
 export interface IFoodSubcategory extends Document {
   _id: Types.ObjectId;
+  vendorId?: Types.ObjectId | null;
   categoryId: Types.ObjectId;
   name: string;
   slug: string;
@@ -20,6 +23,7 @@ export interface IFoodSubcategory extends Document {
 
 const foodSubcategorySchema = new Schema<IFoodSubcategory>(
   {
+    vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
     categoryId: { type: Schema.Types.ObjectId, ref: 'FoodCategory', required: true, index: true },
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true },

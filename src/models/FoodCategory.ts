@@ -2,13 +2,18 @@ import { Schema, model, Document, Types } from 'mongoose';
 import { GENERIC_STATUS } from '../constants/enums';
 import { slugify } from '../utils/slug';
 
-// Fully global, admin-managed taxonomy — mirrors InstamartCategory. A
-// marketplace of independent vendors needs one canonical "North Indian"
-// category every vendor's menu references, not each vendor inventing its own
-// (see foodCategory.service.ts). Which categories/subcategories a specific
-// vendor may actually use is controlled separately via VendorCatalogAccess.
+// Two kinds of category share this collection:
+// - GLOBAL (vendorId: null) — the admin-managed taxonomy every vendor's menu
+//   can reference ("North Indian"); read-only for vendors. Which global
+//   categories a specific vendor may use is controlled via VendorCatalogAccess.
+// - VENDOR-OWNED (vendorId set) — a vendor's own private menu section, visible
+//   only to that vendor (and customers/admins), managed by that vendor alone,
+//   and implicitly usable by its owner without any catalog-access grant.
+// Records created before vendor-owned categories existed have no vendorId at
+// all, which Mongo's { vendorId: null } matches — so they stay global.
 export interface IFoodCategory extends Document {
   _id: Types.ObjectId;
+  vendorId?: Types.ObjectId | null;
   name: string;
   slug: string;
   description?: string;
@@ -22,6 +27,7 @@ export interface IFoodCategory extends Document {
 
 const foodCategorySchema = new Schema<IFoodCategory>(
   {
+    vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true, trim: true },
     description: { type: String },

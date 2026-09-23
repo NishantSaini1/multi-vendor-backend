@@ -15,7 +15,11 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   const pagination = parsePagination(req, { displayOrder: 1 });
 
   const { items, total } = await foodSubcategoryService.listFoodSubcategories(
-    { categoryId: req.query.categoryId as string | undefined, status: req.query.status as string | undefined },
+    {
+      categoryId: req.query.categoryId as string | undefined,
+      status: req.query.status as string | undefined,
+      vendorId: req.query.vendorId as string | undefined,
+    },
     pagination,
     user,
   );
@@ -23,7 +27,7 @@ export const list = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const create = catchAsync(async (req: Request, res: Response) => {
-  const subcategory = await foodSubcategoryService.createFoodSubcategory(req.body);
+  const subcategory = await foodSubcategoryService.createFoodSubcategory(req.body, requireUser(req));
   sendSuccess(res, subcategory, 'Food subcategory created successfully', 201);
 });
 
@@ -33,16 +37,16 @@ export const getById = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const update = catchAsync(async (req: Request, res: Response) => {
-  const subcategory = await foodSubcategoryService.updateFoodSubcategory(req.params.id, req.body);
+  const subcategory = await foodSubcategoryService.updateFoodSubcategory(req.params.id, req.body, requireUser(req));
   sendSuccess(res, subcategory, 'Food subcategory updated successfully');
 });
 
 export const remove = catchAsync(async (req: Request, res: Response) => {
-  await foodSubcategoryService.deleteFoodSubcategory(req.params.id);
+  await foodSubcategoryService.deleteFoodSubcategory(req.params.id, requireUser(req));
   sendSuccess(res, null, 'Food subcategory deleted successfully');
 });
 
 export const updateStatus = catchAsync(async (req: Request, res: Response) => {
-  const subcategory = await foodSubcategoryService.updateFoodSubcategoryStatus(req.params.id, req.body.status);
+  const subcategory = await foodSubcategoryService.updateFoodSubcategoryStatus(req.params.id, req.body.status, requireUser(req));
   sendSuccess(res, subcategory, 'Food subcategory status updated');
 });

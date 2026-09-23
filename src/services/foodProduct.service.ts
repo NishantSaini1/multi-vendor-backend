@@ -41,8 +41,12 @@ export async function listFoodProducts(
   // Re-asserted here (not just in foodProductListFilter) so an admin-only
   // query param merged in the controller (e.g. ?status=PENDING_APPROVAL) can
   // never leak a non-active item to a customer/vendor.
-  const query =
+  let query: Record<string, unknown> =
     user.userType === 'CUSTOMER' || user.userType === 'VENDOR' ? { ...filter, status: GLOBAL_FOOD_ITEM_STATUS.ACTIVE } : filter;
+  // An item approved into some vendor's own private category/subcategory
+  // (see FoodCategory.ts) is that vendor's alone — keep it out of every other
+  // vendor's catalog browse. ANDed so a ?categoryId= filter can't bypass it.
+  if (user.userType === 'VENDOR') query = { $and: [query, await othersPrivateCatalogExclusion(user.userId)] };
   const [items, total] = await Promise.all([
     FoodProduct.find(query).sort(pagination.sort).skip(pagination.skip).limit(pagination.limit),
     FoodProduct.countDocuments(query),
@@ -69,7 +73,23 @@ export async function getFoodProductById(id: string, user: JwtPayload) {
   if ((user.userType === 'CUSTOMER' || user.userType === 'VENDOR') && product.status !== GLOBAL_FOOD_ITEM_STATUS.ACTIVE) {
     throw ApiError.notFound('Food item not found', 'FOOD_PRODUCT_NOT_FOUND');
   }
+  if (user.userType === 'VENDOR') {
+    const hidden = await FoodProduct.exists({ _id: product._id, ...(await othersPrivateCatalogExclusion(user.userId, true)) });
+    if (hidden) throw ApiError.notFound('Food item not found', 'FOOD_PRODUCT_NOT_FOUND');
+  }
   return product;
+}
+
+// Mongo filter excluding items filed under another vendor's private category
+// or subcategory. With `invert`, matches exactly those items instead.
+async function othersPrivateCatalogExclusion(vendorId: string, invert = false): Promise<Record<string, unknown>> {
+  const othersPrivate = { vendorId: { $nin: [null, vendorId] } };
+  const [categoryIds, subcategoryIds] = await Promise.all([
+    FoodCategory.find(othersPrivate).distinct('_id'),
+    FoodSubcategory.find(othersPrivate).distinct('_id'),
+  ]);
+  if (invert) return { $or: [{ categoryId: { $in: categoryIds } }, { subcategoryId: { $in: subcategoryIds } }] };
+  return { categoryId: { $nin: categoryIds }, subcategoryId: { $nin: subcategoryIds } };
 }
 
 export async function updateFoodProduct(id: string, data: Record<string, unknown>) {

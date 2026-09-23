@@ -49,6 +49,19 @@ export async function grantVendorCatalogAccess(vendorId: string, data: { categor
   await findVendorOrThrow(vendorId);
   await assertCategoryAndSubcategoryExist(data.categoryId, data.subcategoryId ?? null);
 
+  // Grants only make sense for the GLOBAL taxonomy — a vendor-owned
+  // category/subcategory is implicitly usable by its owner and by no one else.
+  const [category, subcategory] = await Promise.all([
+    FoodCategory.findById(data.categoryId).select('vendorId'),
+    data.subcategoryId ? FoodSubcategory.findById(data.subcategoryId).select('vendorId') : null,
+  ]);
+  if (category?.vendorId || subcategory?.vendorId) {
+    throw ApiError.badRequest(
+      "Catalog access can only be granted for global categories — a vendor's own categories are private to it",
+      'CATALOG_ACCESS_PRIVATE_CATEGORY',
+    );
+  }
+
   try {
     return await VendorCatalogAccess.create({
       vendorId,
@@ -76,11 +89,29 @@ export async function revokeVendorCatalogAccess(vendorId: string, accessId: stri
 // none); a subcategory-scoped grant covers only that exact subcategory, so an
 // item with no subcategoryId of its own can only be covered by a
 // whole-category grant.
+//
+// Vendor-owned categories/subcategories (see FoodCategory.ts) bypass grants:
+// a vendor may always use its own, and never another vendor's.
 export async function assertVendorHasCatalogAccess(
   vendorId: string,
   categoryId: string,
   subcategoryId?: string | null,
 ): Promise<void> {
+  const [category, subcategory] = await Promise.all([
+    FoodCategory.findById(categoryId).select('vendorId'),
+    subcategoryId ? FoodSubcategory.findById(subcategoryId).select('vendorId') : null,
+  ]);
+  const ownerOf = (doc: { vendorId?: unknown } | null) => (doc?.vendorId ? String(doc.vendorId) : null);
+  const categoryOwner = ownerOf(category);
+  const subcategoryOwner = ownerOf(subcategory);
+
+  if ((categoryOwner && categoryOwner !== vendorId) || (subcategoryOwner && subcategoryOwner !== vendorId)) {
+    throw ApiError.forbidden('This category belongs to another vendor', 'CATALOG_ACCESS_FORBIDDEN');
+  }
+  // The vendor's own category (anything under it is its own too), or its own
+  // subcategory — even one sitting under a global category it has no grant for.
+  if (categoryOwner === vendorId || subcategoryOwner === vendorId) return;
+
   const query: Record<string, unknown> = { vendorId, categoryId };
   query.$or = subcategoryId ? [{ subcategoryId: null }, { subcategoryId }] : [{ subcategoryId: null }];
 
