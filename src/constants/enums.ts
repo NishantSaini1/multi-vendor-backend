@@ -105,6 +105,9 @@ export const INVENTORY_TRANSACTION_TYPES = {
 
 export const NOTIFICATION_TYPES = {
   ORDER_CREATED: 'ORDER_CREATED',
+  // Vendor-facing: a customer placed an order at this vendor (rings the
+  // vendor app's siren channel — see notification.service PUSH_OPTIONS_BY_TYPE).
+  NEW_ORDER: 'NEW_ORDER',
   ORDER_CONFIRMED: 'ORDER_CONFIRMED',
   ORDER_PREPARING: 'ORDER_PREPARING',
   ORDER_READY: 'ORDER_READY',

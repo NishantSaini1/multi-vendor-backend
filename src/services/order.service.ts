@@ -514,6 +514,17 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       `Your order ${createdOrder!.orderNumber} has been placed.`,
       { orderId: createdOrder!.id },
     );
+    // Rings the vendor app's new-order siren, even with the app closed.
+    if (createdOrder!.vendorId) {
+      await notificationService.notify(
+        createdOrder!.vendorId.toString(),
+        'VENDOR',
+        NOTIFICATION_TYPES.NEW_ORDER,
+        'New order received!',
+        `Order ${createdOrder!.orderNumber} • ₹${createdOrder!.total} — tap to accept.`,
+        { orderId: createdOrder!.id },
+      );
+    }
     if (createdOrder!.paymentStatus === PAYMENT_STATUS.PAID) {
       await notificationService.notify(
         customerId,

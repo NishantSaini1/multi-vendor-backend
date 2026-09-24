@@ -5,7 +5,39 @@ import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { UserType } from '../constants/roles';
 import { sendPush, SendPushResult } from '../config/onesignal';
+import { sendExpoPush, isExpoPushToken, ExpoPushOptions } from '../config/expoPush';
+import { NOTIFICATION_TYPES } from '../constants/enums';
 import { logger } from '../utils/logger';
+
+// Per-type push delivery options for the Expo apps. Keyed by type (not
+// passed per call) so the retry job re-sends a notification the same way.
+// 'new-orders' / 'new-order-alarm.wav' are the Android channel + bundled
+// sound the vendor app registers (vendor-mobile-app src/utils/pushNotifications.ts).
+const PUSH_OPTIONS_BY_TYPE: Partial<Record<string, ExpoPushOptions>> = {
+  [NOTIFICATION_TYPES.NEW_ORDER]: { channelId: 'new-orders', sound: 'new-order-alarm.wav' },
+};
+
+// Devices registered by the Expo apps hold an Expo push token; anything else
+// is a OneSignal player id. Send each group through its own provider.
+async function pushToDevices(
+  devices: { playerId: string }[],
+  type: string,
+  title: string,
+  body: string,
+  data?: Record<string, string>,
+): Promise<SendPushResult> {
+  // Apps read `type` off the payload to decide how to handle the push.
+  data = { ...data, type };
+  const expoTokens = devices.map((d) => d.playerId).filter(isExpoPushToken);
+  const playerIds = devices.map((d) => d.playerId).filter((id) => !isExpoPushToken(id));
+  const results = await Promise.all([
+    sendExpoPush({ tokens: expoTokens, title, body, data, ...PUSH_OPTIONS_BY_TYPE[type] }),
+    sendPush({ playerIds, title, body, data }),
+  ]);
+  if (results.includes('sent')) return 'sent';
+  if (results.includes('failed')) return 'failed';
+  return 'skipped';
+}
 
 export async function registerDevice(user: JwtPayload, data: { playerId: string; deviceType: string; deviceId: string }) {
   // Upsert on (userId, deviceId): re-registering the same physical device
@@ -125,12 +157,7 @@ export async function notify(
   const devices = await NotificationDevice.find({ userId, userType }).catch(() => []);
   if (devices.length === 0) return;
 
-  const result = await sendPush({
-    playerIds: devices.map((d) => d.playerId),
-    title,
-    body,
-    data: data ? stringifyData(data) : undefined,
-  });
+  const result = await pushToDevices(devices, type, title, body, data ? stringifyData(data) : undefined);
   await applyPushResult(notification, result);
 }
 
@@ -156,12 +183,13 @@ export async function retryFailedPushes(maxAttempts: number, olderThanHours = 24
       continue;
     }
 
-    const result = await sendPush({
-      playerIds: devices.map((d) => d.playerId),
-      title: notification.title,
-      body: notification.body,
-      data: notification.data ? stringifyData(notification.data) : undefined,
-    });
+    const result = await pushToDevices(
+      devices,
+      notification.type,
+      notification.title,
+      notification.body,
+      notification.data ? stringifyData(notification.data) : undefined,
+    );
     await applyPushResult(notification, result);
     if (result === 'sent') succeeded += 1;
   }
