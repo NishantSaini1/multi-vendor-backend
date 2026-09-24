@@ -5,13 +5,20 @@ import { redisClient } from '../config/redis';
 import { env } from '../config/env';
 
 function redisStore(prefix: string) {
-  return new RedisStore({
+  const store = new RedisStore({
     sendCommand: (...args: string[]) => {
       const [command, ...rest] = args;
       return redisClient.call(command, rest) as Promise<never>;
     },
     prefix: `rl:${prefix}:`,
   });
+  // The constructor fires SCRIPT LOAD at import time. If Redis isn't
+  // reachable yet those promises reject with nobody awaiting them, which
+  // crashes the process. The store reloads the scripts on the next
+  // increment/get anyway, so the initial failure is safe to ignore.
+  store.incrementScriptSha.catch(() => undefined);
+  store.getScriptSha.catch(() => undefined);
+  return store;
 }
 
 function phoneOrIpKey(req: Request): string {
@@ -24,6 +31,8 @@ export const generalRateLimiter = rateLimit({
   max: env.RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  // Let requests through rather than 500 every route while Redis is down.
+  passOnStoreError: true,
   store: redisStore('general'),
 });
 

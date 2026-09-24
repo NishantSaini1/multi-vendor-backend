@@ -7,6 +7,10 @@ export const redisClient = new Redis(env.REDIS_URL, {
   lazyConnect: false,
 });
 
+if (env.NODE_ENV === 'production' && !process.env.REDIS_URL) {
+  logger.warn('REDIS_URL is not set; falling back to redis://127.0.0.1:6379, which does not exist on a hosted server');
+}
+
 redisClient.on('connect', () => logger.info('Redis connected'));
 redisClient.on('error', (err) => logger.error({ err }, 'Redis connection error'));
 
