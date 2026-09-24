@@ -78,6 +78,18 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     return;
   }
 
+  // ioredis gives up on queued commands while it can't reach Redis — a
+  // transient outage, not a bug, so don't leak the driver message to clients.
+  if (err instanceof Error && err.name === 'MaxRetriesPerRequestError') {
+    logger.error({ err, path: req.originalUrl, method: req.method }, 'Redis unavailable');
+    res.status(503).json({
+      success: false,
+      message: 'Service temporarily unavailable, please try again in a moment',
+      error: { code: 'SERVICE_UNAVAILABLE' },
+    });
+    return;
+  }
+
   logger.error({ err, path: req.originalUrl, method: req.method }, 'Unhandled error');
 
   res.status(500).json({

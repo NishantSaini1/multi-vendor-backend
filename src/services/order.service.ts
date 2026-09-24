@@ -669,12 +669,16 @@ export async function updateOrderStatus(id: string, newStatus: string, user: Jwt
 }
 
 const CANCELLABLE_STATUSES = new Set(['PENDING', 'CONFIRMED', 'PREPARING', 'PACKING']);
+// Once the kitchen/store starts preparing, the customer can no longer cancel
+// themselves — vendors, stores and admins still can (e.g. out of stock).
+const CUSTOMER_CANCELLABLE_STATUSES = new Set(['PENDING', 'CONFIRMED']);
 
 export async function cancelOrder(id: string, reason: string, user: JwtPayload) {
   const order = await findOrderOrThrow(id);
   assertOrderAccess(user, order);
 
-  if (!CANCELLABLE_STATUSES.has(order.status)) {
+  const allowed = user.userType === 'CUSTOMER' ? CUSTOMER_CANCELLABLE_STATUSES : CANCELLABLE_STATUSES;
+  if (!allowed.has(order.status)) {
     throw ApiError.badRequest(`Order cannot be cancelled from status ${order.status}`, 'ORDER_NOT_CANCELLABLE');
   }
 

@@ -55,6 +55,10 @@ const envSchema = z.object({
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
   RATE_LIMIT_MAX: z.coerce.number().default(200),
+  // Per phone+IP, per 15 min. Raise in development so repeated test logins
+  // don't lock the number out.
+  OTP_SEND_RATE_LIMIT_MAX: z.coerce.number().default(5),
+  OTP_VERIFY_RATE_LIMIT_MAX: z.coerce.number().default(10),
 
   // How long an order can sit PENDING (unconfirmed by the vendor/store)
   // before the background sweep auto-cancels it.

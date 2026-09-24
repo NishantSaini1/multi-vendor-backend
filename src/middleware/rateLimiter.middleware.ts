@@ -80,7 +80,7 @@ export const generalRateLimiter = rateLimit({
 
 export const otpSendRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 5,
+  max: env.OTP_SEND_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: phoneOrIpKey,
@@ -90,7 +90,7 @@ export const otpSendRateLimiter = rateLimit({
 
 export const otpVerifyRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: env.OTP_VERIFY_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: phoneOrIpKey,
