@@ -7,6 +7,7 @@ import hpp from 'hpp';
 import mongoSanitize from 'express-mongo-sanitize';
 import swaggerUi from 'swagger-ui-express';
 import { env } from './config/env';
+import { corsOptions } from './config/corsWhitelist';
 import { logger } from './utils/logger';
 import { swaggerSpec } from './docs/swagger';
 import apiRoutes from './routes';
@@ -15,13 +16,14 @@ import { generalRateLimiter } from './middleware/rateLimiter.middleware';
 
 const app: Application = express();
 
+// Render terminates TLS at a proxy; trust its X-Forwarded-For so req.ip (and
+// therefore per-client rate limiting) is the caller, not the proxy.
+if (env.isProduction) {
+  app.set('trust proxy', 1);
+}
+
 app.use(helmet());
-app.use(
-  cors({
-    origin: env.CLIENT_URLS,
-    credentials: true,
-  }),
-);
+app.use(cors(corsOptions));
 app.use(compression());
 app.use(
   express.json({

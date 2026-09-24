@@ -2,13 +2,20 @@ import Redis from 'ioredis';
 import { env } from './env';
 import { logger } from '../utils/logger';
 
+// In production the localhost default never points at a real server, so
+// treat a missing REDIS_URL as "no Redis": don't connect at boot (avoids an
+// endless reconnect/error loop) and let callers like the rate limiters fall
+// back to in-memory state. Features that truly need Redis (OTP, password
+// reset, partner geo) will still fail until REDIS_URL is set.
+export const isRedisConfigured = Boolean(process.env.REDIS_URL) || !env.isProduction;
+
 export const redisClient = new Redis(env.REDIS_URL, {
   maxRetriesPerRequest: 3,
-  lazyConnect: false,
+  lazyConnect: !isRedisConfigured,
 });
 
-if (env.NODE_ENV === 'production' && !process.env.REDIS_URL) {
-  logger.warn('REDIS_URL is not set; falling back to redis://127.0.0.1:6379, which does not exist on a hosted server');
+if (!isRedisConfigured) {
+  logger.warn('REDIS_URL is not set; rate limiting uses in-memory storage and OTP/password reset are unavailable');
 }
 
 redisClient.on('connect', () => logger.info('Redis connected'));

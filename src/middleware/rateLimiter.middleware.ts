@@ -1,10 +1,14 @@
 import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { Request } from 'express';
-import { redisClient } from '../config/redis';
+import { redisClient, isRedisConfigured } from '../config/redis';
 import { env } from '../config/env';
 
+// Without Redis, return undefined so express-rate-limit uses its built-in
+// per-process MemoryStore — limits still apply, they just aren't shared
+// across instances or restarts.
 function redisStore(prefix: string) {
+  if (!isRedisConfigured) return undefined;
   const store = new RedisStore({
     sendCommand: (...args: string[]) => {
       const [command, ...rest] = args;
