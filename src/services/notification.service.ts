@@ -11,10 +11,10 @@ import { logger } from '../utils/logger';
 
 // Per-type push delivery options for the Expo apps. Keyed by type (not
 // passed per call) so the retry job re-sends a notification the same way.
-// 'new-orders' / 'new-order-alarm.wav' are the Android channel + bundled
+// 'new-orders' / 'new_order_alarm.wav' are the Android channel + bundled
 // sound the vendor app registers (vendor-mobile-app src/utils/pushNotifications.ts).
 const PUSH_OPTIONS_BY_TYPE: Partial<Record<string, ExpoPushOptions>> = {
-  [NOTIFICATION_TYPES.NEW_ORDER]: { channelId: 'new-orders', sound: 'new-order-alarm.wav' },
+  [NOTIFICATION_TYPES.NEW_ORDER]: { channelId: 'new-orders', sound: 'new_order_alarm.wav' },
 };
 
 // Devices registered by the Expo apps hold an Expo push token; anything else
