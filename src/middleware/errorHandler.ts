@@ -17,7 +17,12 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
       success: false,
       message: 'Validation failed',
       errors: err.issues.map((issue) => ({
-        field: issue.path.join('.'),
+        // validate() always wraps every schema as { body, query, params }
+        // (see validate.middleware.ts), so issue.path[0] is that wrapper key,
+        // not part of the actual field name — strip it so `field` matches
+        // what the client actually sent (e.g. "newPassword", not
+        // "body.newPassword").
+        field: issue.path.slice(1).join('.'),
         message: issue.message,
       })),
     });
