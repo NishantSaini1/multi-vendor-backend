@@ -1,20 +1,58 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { MemoryStore, Options, Store } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { Request } from 'express';
 import { redisClient, isRedisConfigured } from '../config/redis';
 import { env } from '../config/env';
 
-// Without Redis, return undefined so express-rate-limit uses its built-in
-// per-process MemoryStore — limits still apply, they just aren't shared
-// across instances or restarts.
-function redisStore(prefix: string) {
-  if (!isRedisConfigured) return undefined;
+// Uses Redis while it's actually connected and the per-process MemoryStore
+// otherwise, so limits keep applying (just not shared across instances)
+// instead of every request failing when Redis is missing or down.
+class RedisWithMemoryFallbackStore implements Store {
+  prefix: string;
+  private readonly memory = new MemoryStore();
+
+  constructor(
+    prefix: string,
+    private readonly redis: RedisStore | undefined,
+  ) {
+    this.prefix = prefix;
+  }
+
+  private active(): Store {
+    return this.redis && redisClient.status === 'ready' ? this.redis : this.memory;
+  }
+
+  init(options: Options) {
+    this.memory.init(options);
+    this.redis?.init(options);
+  }
+
+  get(key: string) {
+    return this.active().get?.(key);
+  }
+
+  increment(key: string) {
+    return this.active().increment(key);
+  }
+
+  decrement(key: string) {
+    return this.active().decrement(key);
+  }
+
+  resetKey(key: string) {
+    return this.active().resetKey(key);
+  }
+}
+
+function redisStore(prefix: string): Store {
+  const fullPrefix = `rl:${prefix}:`;
+  if (!isRedisConfigured) return new RedisWithMemoryFallbackStore(fullPrefix, undefined);
   const store = new RedisStore({
     sendCommand: (...args: string[]) => {
       const [command, ...rest] = args;
       return redisClient.call(command, rest) as Promise<never>;
     },
-    prefix: `rl:${prefix}:`,
+    prefix: fullPrefix,
   });
   // The constructor fires SCRIPT LOAD at import time. If Redis isn't
   // reachable yet those promises reject with nobody awaiting them, which
@@ -22,7 +60,7 @@ function redisStore(prefix: string) {
   // increment/get anyway, so the initial failure is safe to ignore.
   store.incrementScriptSha.catch(() => undefined);
   store.getScriptSha.catch(() => undefined);
-  return store;
+  return new RedisWithMemoryFallbackStore(fullPrefix, store);
 }
 
 function phoneOrIpKey(req: Request): string {
