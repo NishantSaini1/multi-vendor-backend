@@ -1,4 +1,4 @@
-import { redisClient } from '../config/redis';
+import { kvGet, kvSet, kvDel, kvIncr } from '../config/kvStore';
 import { env } from '../config/env';
 import { generateOtp, hashOtp, verifyOtpHash } from '../utils/otp';
 import { ApiError } from '../utils/ApiError';
@@ -29,52 +29,18 @@ function isTestPhone(phone: string): boolean {
 }
 
 export async function sendOtp(phone: string): Promise<SendOtpResult> {
-  console.log('🔥 sendOtp called:', phone);
-
-  const cooldownKeyValue = cooldownKey(phone);
-  console.log('🔥 cooldown key:', cooldownKeyValue);
-
-  const onCooldown = await redisClient.get(cooldownKeyValue);
-  console.log('🔥 onCooldown:', onCooldown);
-
+  const onCooldown = await kvGet(cooldownKey(phone));
   if (onCooldown) {
-    console.log('❌ OTP blocked because cooldown is active');
-
-    throw ApiError.tooManyRequests(
-      'Please wait before requesting another OTP',
-      'OTP_COOLDOWN_ACTIVE'
-    );
+    throw ApiError.tooManyRequests('Please wait before requesting another OTP', 'OTP_COOLDOWN_ACTIVE');
   }
 
-  console.log('🔥 TEST_OTP_CODE:', env.TEST_OTP_CODE);
-  console.log('🔥 TEST_OTP_PHONES_LIST:', env.TEST_OTP_PHONES_LIST);
-  console.log('🔥 isProduction:', env.isProduction);
-  console.log('🔥 isTestPhone:', isTestPhone(phone));
-
-  const otp = isTestPhone(phone)
-    ? env.TEST_OTP_CODE
-    : generateOtp();
-
-  console.log('🔥 Generated OTP:', otp);
-
+  const otp = isTestPhone(phone) ? env.TEST_OTP_CODE : generateOtp();
   const hashed = hashOtp(otp, phone);
   const expirySeconds = env.OTP_EXPIRY_MINUTES * 60;
 
-  await redisClient.set(
-    otpKey(phone),
-    hashed,
-    'EX',
-    expirySeconds
-  );
-
-  await redisClient.set(
-    cooldownKey(phone),
-    '1',
-    'EX',
-    env.OTP_RESEND_COOLDOWN_SECONDS
-  );
-
-  await redisClient.del(attemptsKey(phone));
+  await kvSet(otpKey(phone), hashed, expirySeconds);
+  await kvSet(cooldownKey(phone), '1', env.OTP_RESEND_COOLDOWN_SECONDS);
+  await kvDel(attemptsKey(phone));
 
   if (env.isDevelopment) {
     logger.info({ phone }, `Dev OTP generated: ${otp}`);
@@ -92,26 +58,25 @@ export async function sendOtp(phone: string): Promise<SendOtpResult> {
 }
 
 export async function verifyOtp(phone: string, otp: string): Promise<void> {
-  const storedHash = await redisClient.get(otpKey(phone));
+  const storedHash = await kvGet(otpKey(phone));
   if (!storedHash) {
     throw ApiError.badRequest('OTP has expired or was never sent', 'OTP_EXPIRED');
   }
 
-  const attempts = parseInt((await redisClient.get(attemptsKey(phone))) ?? '0', 10);
+  const attempts = parseInt((await kvGet(attemptsKey(phone))) ?? '0', 10);
   if (attempts >= env.OTP_MAX_ATTEMPTS) {
-    await redisClient.del(otpKey(phone));
+    await kvDel(otpKey(phone));
     throw ApiError.tooManyRequests('Maximum OTP attempts exceeded, please request a new OTP', 'OTP_MAX_ATTEMPTS');
   }
 
   const isValid = verifyOtpHash(otp, phone, storedHash);
   if (!isValid) {
-    await redisClient.incr(attemptsKey(phone));
-    await redisClient.expire(attemptsKey(phone), env.OTP_EXPIRY_MINUTES * 60);
+    await kvIncr(attemptsKey(phone), env.OTP_EXPIRY_MINUTES * 60);
     throw ApiError.badRequest('Invalid OTP', 'OTP_INVALID');
   }
 
-  await redisClient.del(otpKey(phone));
-  await redisClient.del(attemptsKey(phone));
+  await kvDel(otpKey(phone));
+  await kvDel(attemptsKey(phone));
 
   const latestUnverified = await OtpVerification.findOne({ phone, verified: false }).sort({ createdAt: -1 });
   if (latestUnverified) {

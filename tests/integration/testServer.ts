@@ -8,7 +8,9 @@ let mongoServer: MongoMemoryReplSet | undefined;
 // order-creation flows) actually work under test, matching how MongoDB is
 // normally deployed in production (even single-node clusters are replica sets).
 export async function startTestDatabase(): Promise<void> {
-  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  // The 10s default launch timeout is too tight on a loaded machine
+  // (emulator/Gradle running alongside) and fails whole suites spuriously.
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1 }, instanceOpts: [{ launchTimeout: 60_000 }] });
   await mongoose.connect(mongoServer.getUri());
 }
 

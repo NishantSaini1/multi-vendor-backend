@@ -8,10 +8,54 @@ import { JwtPayload } from '../utils/jwt';
 import { FOOD_ITEM_SUBMISSION_STATUS, GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
 import { assertCategoryAndSubcategoryExist, assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
 
+type Submission = InstanceType<typeof FoodItemSubmission>;
+
+// Creates the GLOBAL FoodProduct (submittedByVendorId = the submitting
+// vendor) plus that vendor's VendorFoodItem using the proposed
+// price/mrp/preparationTime, and marks the submission APPROVED. reviewerId is
+// null for an auto-approved submission.
+async function materializeSubmission(submission: Submission, reviewerId: string | null, session: mongoose.ClientSession) {
+  const [globalItem] = await FoodProduct.create(
+    [
+      {
+        categoryId: submission.categoryId,
+        subcategoryId: submission.subcategoryId,
+        name: submission.name,
+        description: submission.description,
+        images: submission.image ? [submission.image] : [],
+        foodType: submission.foodType,
+        status: GLOBAL_FOOD_ITEM_STATUS.ACTIVE,
+        submittedByVendorId: submission.vendorId,
+      },
+    ],
+    { session },
+  );
+
+  await VendorFoodItem.create(
+    [
+      {
+        vendorId: submission.vendorId,
+        globalFoodItemId: globalItem.id,
+        price: submission.price,
+        mrp: submission.mrp,
+        preparationTime: submission.preparationTime,
+      },
+    ],
+    { session },
+  );
+
+  submission.status = FOOD_ITEM_SUBMISSION_STATUS.APPROVED;
+  submission.resultingGlobalFoodItemId = globalItem._id;
+  submission.reviewedBy = reviewerId ? new mongoose.Types.ObjectId(reviewerId) : undefined;
+  submission.reviewedAt = new Date();
+  await submission.save({ session });
+}
+
 // A vendor's "this item doesn't exist in the catalog yet" proposal (spec
-// §12) — mirrors instamartProduct.service.ts's store-submits-a-new-product
-// flow, but with an explicit admin-approval gate rather than auto-approve
-// (see approveFoodItemSubmission below).
+// §12). Auto-approved on creation — like instamartProduct.service.ts's
+// store-submits-a-new-product flow — so the item is on the vendor's menu
+// immediately with no admin review. The submission row is kept as an audit
+// trail of who added the catalog entry.
 export async function createFoodItemSubmission(vendorId: string, data: Record<string, unknown>) {
   const categoryId = data.categoryId as string;
   const subcategoryId = (data.subcategoryId as string | undefined) ?? null;
@@ -22,7 +66,20 @@ export async function createFoodItemSubmission(vendorId: string, data: Record<st
   // see vendorFoodItem.service.ts's addVendorFoodItem).
   await assertVendorHasCatalogAccess(vendorId, categoryId, subcategoryId);
 
-  return FoodItemSubmission.create({ ...data, vendorId, status: FOOD_ITEM_SUBMISSION_STATUS.PENDING_APPROVAL });
+  const session = await mongoose.startSession();
+  let submission: Submission | undefined;
+  try {
+    await session.withTransaction(async () => {
+      [submission] = await FoodItemSubmission.create(
+        [{ ...data, vendorId, status: FOOD_ITEM_SUBMISSION_STATUS.PENDING_APPROVAL }],
+        { session },
+      );
+      await materializeSubmission(submission, null, session);
+    });
+  } finally {
+    await session.endSession();
+  }
+  return submission!;
 }
 
 // A vendor sees only their own submissions; an admin sees every vendor's.
@@ -83,9 +140,9 @@ export async function updateFoodItemSubmission(id: string, data: Record<string, 
   return submission;
 }
 
-// Admin-only (enforced at the route level): transactionally creates the
-// GLOBAL FoodProduct (submittedByVendorId = the submitting vendor) plus a
-// VendorFoodItem for that vendor using the proposed price/mrp/preparationTime.
+// Admin-only (enforced at the route level). New submissions are
+// auto-approved on creation, so this only applies to ones still pending from
+// before that change.
 export async function approveFoodItemSubmission(id: string, user: JwtPayload) {
   const submission = await findSubmissionOrThrow(id);
   if (submission.status !== FOOD_ITEM_SUBMISSION_STATUS.PENDING_APPROVAL) {
@@ -95,40 +152,7 @@ export async function approveFoodItemSubmission(id: string, user: JwtPayload) {
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
-      const [globalItem] = await FoodProduct.create(
-        [
-          {
-            categoryId: submission.categoryId,
-            subcategoryId: submission.subcategoryId,
-            name: submission.name,
-            description: submission.description,
-            images: submission.image ? [submission.image] : [],
-            foodType: submission.foodType,
-            status: GLOBAL_FOOD_ITEM_STATUS.ACTIVE,
-            submittedByVendorId: submission.vendorId,
-          },
-        ],
-        { session },
-      );
-
-      await VendorFoodItem.create(
-        [
-          {
-            vendorId: submission.vendorId,
-            globalFoodItemId: globalItem.id,
-            price: submission.price,
-            mrp: submission.mrp,
-            preparationTime: submission.preparationTime,
-          },
-        ],
-        { session },
-      );
-
-      submission.status = FOOD_ITEM_SUBMISSION_STATUS.APPROVED;
-      submission.resultingGlobalFoodItemId = globalItem._id;
-      submission.reviewedBy = new mongoose.Types.ObjectId(user.userId);
-      submission.reviewedAt = new Date();
-      await submission.save({ session });
+      await materializeSubmission(submission, user.userId, session);
     });
   } finally {
     await session.endSession();

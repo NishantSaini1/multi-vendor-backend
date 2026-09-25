@@ -3,6 +3,9 @@ import app from '../../src/app';
 import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
+import { FoodProduct } from '../../src/models/FoodProduct';
+import { VendorFoodItem } from '../../src/models/VendorFoodItem';
+import { FoodItemSubmission } from '../../src/models/FoodItemSubmission';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
 import { createTestVendor, createGlobalFoodItem } from './helpers/foodFixtures';
@@ -177,6 +180,13 @@ describe('Vendor-owned food categories and subcategories', () => {
       price: 150,
     });
     expect(own.status).toBe(201);
+    // Auto-approved: the catalog entry and the vendor's menu item exist
+    // straight away, with no admin review.
+    expect(own.body.data.status).toBe('APPROVED');
+    expect(own.body.data.reviewedBy).toBeUndefined();
+    const globalItemId = own.body.data.resultingGlobalFoodItemId;
+    expect(await FoodProduct.exists({ _id: globalItemId, status: 'ACTIVE' })).toBeTruthy();
+    expect(await VendorFoodItem.exists({ vendorId: vendorAId, globalFoodItemId: globalItemId })).toBeTruthy();
     pendingSubmissionId = own.body.data._id;
 
     const noGrant = await api(vendorAToken).post('/food-item-submissions', { name: 'Plain Biryani', categoryId: globalCategoryId, price: 120 });
@@ -202,13 +212,15 @@ describe('Vendor-owned food categories and subcategories', () => {
     expect(blocked.status).toBe(409);
     expect(blocked.body.error.code).toBe('CATEGORY_IN_USE');
 
-    // The pending submission filed under the subcategory blocks it too.
+    // The auto-approved item filed under the subcategory blocks it too.
     const subBlocked = await api(vendorAToken).delete(`/food/subcategories/${ownSubcategoryId}`);
     expect(subBlocked.status).toBe(409);
     expect(subBlocked.body.error.code).toBe('SUBCATEGORY_IN_USE');
 
-    const rejected = await api(superAdminToken).post(`/food-item-submissions/${pendingSubmissionId}/reject`, { rejectionReason: 'Test cleanup' });
-    expect(rejected.status).toBe(200);
+    const submission = await FoodItemSubmission.findById(pendingSubmissionId);
+    await VendorFoodItem.deleteMany({ globalFoodItemId: submission!.resultingGlobalFoodItemId });
+    await FoodProduct.deleteOne({ _id: submission!.resultingGlobalFoodItemId });
+    await submission!.deleteOne();
 
     expect((await api(vendorAToken).delete(`/food/subcategories/${ownSubcategoryId}`)).status).toBe(200);
     expect((await api(vendorAToken).delete(`/food/categories/${ownCategoryId}`)).status).toBe(200);

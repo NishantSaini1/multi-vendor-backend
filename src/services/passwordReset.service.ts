@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { redisClient } from '../config/redis';
+import { kvGet, kvSet, kvDel } from '../config/kvStore';
 import { env } from '../config/env';
 import { ApiError } from '../utils/ApiError';
 import { UserType } from '../constants/roles';
@@ -28,7 +28,7 @@ export async function createResetToken(
   const secret = crypto.randomBytes(24).toString('hex');
   // Self-describing token so /reset-password doesn't need userId/userType as separate inputs.
   const token = Buffer.from(`${userType}.${userId}.${secret}`).toString('base64url');
-  await redisClient.set(resetKey(userType, userId), hashToken(secret), 'EX', RESET_TOKEN_TTL_SECONDS);
+  await kvSet(resetKey(userType, userId), hashToken(secret), RESET_TOKEN_TTL_SECONDS);
 
   const transporter = getMailTransporter();
   if (email && transporter) {
@@ -67,10 +67,10 @@ export function decodeResetToken(token: string): DecodedResetToken & { secret: s
 export async function consumeResetToken(token: string): Promise<DecodedResetToken> {
   const { userType, userId, secret } = decodeResetToken(token);
   const key = resetKey(userType, userId);
-  const storedHash = await redisClient.get(key);
+  const storedHash = await kvGet(key);
   if (!storedHash || storedHash !== hashToken(secret)) {
     throw ApiError.badRequest('Invalid or expired reset token', 'RESET_TOKEN_INVALID');
   }
-  await redisClient.del(key);
+  await kvDel(key);
   return { userType, userId };
 }
