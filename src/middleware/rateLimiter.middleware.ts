@@ -3,6 +3,7 @@ import { RedisStore } from 'rate-limit-redis';
 import { Request } from 'express';
 import { redisClient, isRedisConfigured } from '../config/redis';
 import { env } from '../config/env';
+import { verifyAccessToken } from '../utils/jwt';
 
 // Uses Redis while it's actually connected and the per-process MemoryStore
 // otherwise, so limits keep applying (just not shared across instances)
@@ -68,14 +69,36 @@ function phoneOrIpKey(req: Request): string {
   return `${phone}:${req.ip}`;
 }
 
+// Signed-in callers are limited per user rather than per IP: everyone using
+// the admin panel arrives through Vercel's /api proxy (one IP), and a dev
+// machine's apps all share localhost, so an IP key made them share a single
+// budget. Anonymous/invalid-token requests still fall back to the IP.
+function userOrIpKey(req: Request): string {
+  const header = req.headers.authorization;
+  if (header?.startsWith('Bearer ')) {
+    try {
+      const { userType, userId } = verifyAccessToken(header.slice(7));
+      return `user:${userType}:${userId}`;
+    } catch {
+      // Expired/invalid token — the route's auth middleware will reject it.
+    }
+  }
+  return req.ip ?? 'unknown';
+}
+
 export const generalRateLimiter = rateLimit({
   windowMs: env.RATE_LIMIT_WINDOW_MS,
   max: env.RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: userOrIpKey,
+  // Local development hammers the API from several apps at once; the
+  // login/OTP limiters still apply there.
+  skip: () => env.isDevelopment,
   // Let requests through rather than 500 every route while Redis is down.
   passOnStoreError: true,
   store: redisStore('general'),
+  message: { success: false, message: 'Too many requests, please try again later', error: { code: 'RATE_LIMITED' } },
 });
 
 export const otpSendRateLimiter = rateLimit({

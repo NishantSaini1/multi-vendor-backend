@@ -54,7 +54,9 @@ const envSchema = z.object({
   SMTP_FROM: z.string().optional().default('no-reply@example.com'),
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
-  RATE_LIMIT_MAX: z.coerce.number().default(200),
+  // Per signed-in user (or per IP when anonymous) per window. An admin panel
+  // page fires ~12 API calls, so 200 was hit after a few minutes of use.
+  RATE_LIMIT_MAX: z.coerce.number().default(1000),
   // Per phone+IP, per 15 min. Raise in development so repeated test logins
   // don't lock the number out.
   OTP_SEND_RATE_LIMIT_MAX: z.coerce.number().default(5),
