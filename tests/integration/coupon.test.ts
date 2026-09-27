@@ -359,4 +359,64 @@ describe('Coupons: admin CRUD and order-time application', () => {
       expect(res.body.data.couponDiscount).toBe(10);
     });
   });
+
+  describe('POST /coupons/preview', () => {
+    function preview(token: string, body: Record<string, unknown>) {
+      return request(app)
+        .post('/api/v1/coupons/preview')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ locationId, businessType: 'FOOD', vendorId, subtotal: 250, ...body });
+    }
+
+    it('returns the discount the order would get, using the same math as order creation', async () => {
+      await request(app)
+        .post('/api/v1/coupons')
+        .set('Authorization', `Bearer ${marketingToken}`)
+        .send({ code: 'PREVIEW40', discountType: 'PERCENTAGE', discountValue: 40, maximumDiscount: 60, startDate: farPastDate(), endDate: farFutureDate() });
+
+      const res = await preview(customerToken, { code: 'preview40' });
+      expect(res.status).toBe(200);
+      // 40% of 250 = 100, capped at 60.
+      expect(res.body.data.code).toBe('PREVIEW40');
+      expect(res.body.data.discount).toBe(60);
+      expect(res.body.data.subtotalAfterDiscount).toBe(190);
+    });
+
+    it('never consumes a use', async () => {
+      await request(app)
+        .post('/api/v1/coupons')
+        .set('Authorization', `Bearer ${marketingToken}`)
+        .send({ code: 'PEEKONCE', discountType: 'FIXED', discountValue: 15, usageLimit: 1, startDate: farPastDate(), endDate: farFutureDate() });
+
+      for (let i = 0; i < 3; i += 1) {
+        const res = await preview(customerToken, { code: 'PEEKONCE' });
+        expect(res.status).toBe(200);
+      }
+      // ...so the single real use is still available for an actual order.
+      const order = await placeOrder(customerToken, vendorId, productId, 'PEEKONCE');
+      expect(order.status).toBe(201);
+      expect(order.body.data.couponDiscount).toBe(15);
+    });
+
+    it('rejects with the same error codes order creation uses', async () => {
+      const notFound = await preview(customerToken, { code: 'NOPE123' });
+      expect(notFound.status).toBe(404);
+      expect(notFound.body.error.code).toBe('COUPON_NOT_FOUND');
+
+      const minimum = await preview(customerToken, { code: 'BIGORDER' });
+      expect(minimum.status).toBe(422);
+      expect(minimum.body.error.code).toBe('COUPON_MINIMUM_ORDER_NOT_MET');
+
+      const otherVendor = await preview(customerToken, { code: 'OTHERVENDOR' });
+      expect(otherVendor.status).toBe(422);
+      expect(otherVendor.body.error.code).toBe('COUPON_NOT_APPLICABLE');
+    });
+
+    it('requires a customer token', async () => {
+      const res = await request(app)
+        .post('/api/v1/coupons/preview')
+        .send({ code: 'PREVIEW40', locationId, businessType: 'FOOD', subtotal: 250 });
+      expect(res.status).toBe(401);
+    });
+  });
 });

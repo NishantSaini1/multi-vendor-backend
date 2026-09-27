@@ -51,6 +51,24 @@ export const me = catchAsync(async (req: Request, res: Response) => {
   sendSuccess(res, customer);
 });
 
+export const updateMe = catchAsync(async (req: Request, res: Response) => {
+  if (!req.user) throw ApiError.unauthorized();
+  const customer = await Customer.findById(req.user.userId);
+  if (!customer) throw ApiError.notFound('Customer not found');
+
+  const { name, email, profileImage } = req.body as { name?: string; email?: string; profileImage?: string };
+  if (email) {
+    const taken = await Customer.exists({ email, _id: { $ne: customer.id } });
+    if (taken) throw ApiError.conflict('This email is already used by another account', 'EMAIL_IN_USE');
+  }
+  if (name !== undefined) customer.name = name;
+  // '' clears the field
+  if (email !== undefined) customer.set('email', email || undefined);
+  if (profileImage !== undefined) customer.set('profileImage', profileImage || undefined);
+  await customer.save();
+  sendSuccess(res, customer, 'Profile updated');
+});
+
 export const changePhone = catchAsync(async (req: Request, res: Response) => {
   if (!req.user) throw ApiError.unauthorized();
   const customer = await customerAuthService.changeCustomerPhone(req.user.userId, req.body.newPhone, req.body.otp);

@@ -31,3 +31,29 @@ export const uploadImage = multer({
     cb(null, true);
   },
 }).single('image');
+
+// Short promo clips for home-screen banners. Kept small on purpose — these
+// autoplay on mobile data, so anything beyond a ~10-15s loop should be
+// compressed before upload rather than raising this limit.
+const MAX_VIDEO_SIZE_BYTES = 30 * 1024 * 1024; // 30MB
+const ALLOWED_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm']);
+const ALLOWED_VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm']);
+
+export const uploadVideo = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_VIDEO_SIZE_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const isAllowedMimeType = ALLOWED_VIDEO_MIME_TYPES.has(file.mimetype);
+    const isAllowedExtension = ALLOWED_VIDEO_EXTENSIONS.has(path.extname(file.originalname).toLowerCase());
+    if (!isAllowedMimeType && !isAllowedExtension) {
+      cb(
+        ApiError.badRequest(
+          `Only MP4, MOV, and WEBM videos are supported (received "${file.mimetype}")`,
+          'UNSUPPORTED_FILE_TYPE',
+        ),
+      );
+      return;
+    }
+    cb(null, true);
+  },
+}).single('video');

@@ -12,6 +12,10 @@ export interface ICustomerAddress extends Document {
   longitude: number;
   type: string;
   isDefault: boolean;
+  // Who receives the order at this address. Optional — older addresses have
+  // neither, and callers fall back to the customer's own name/phone.
+  contactName?: string;
+  contactPhone?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -27,6 +31,8 @@ const customerAddressSchema = new Schema<ICustomerAddress>(
     longitude: { type: Number, required: true },
     type: { type: String, enum: Object.values(ADDRESS_TYPES), default: ADDRESS_TYPES.HOME },
     isDefault: { type: Boolean, default: false },
+    contactName: { type: String, trim: true },
+    contactPhone: { type: String, trim: true },
   },
   { timestamps: true },
 );

@@ -61,6 +61,10 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
         isDefault: { $first: '$isDefault' },
         variantPriceFrom: { $first: '$sellingPrice' },
         variantMrpFrom: { $first: '$mrp' },
+        variantIdFrom: { $first: '$_id' },
+        variantNameFrom: { $first: '$name' },
+        minVariantPrice: { $min: '$sellingPrice' },
+        count: { $sum: 1 },
       },
     },
   ]);
@@ -71,15 +75,27 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
     const baseMrp = plain.mrp as number;
     let priceFrom = basePrice;
     let mrpFrom = baseMrp;
+    // which pack variantPriceFrom belongs to (null = the base pack), so a
+    // card can label the price with the right pack size
+    let variantIdFrom: string | null = null;
+    let variantNameFrom: string | null = null;
     if (stat && (stat.isDefault || stat.variantPriceFrom < basePrice)) {
       priceFrom = stat.variantPriceFrom;
       mrpFrom = stat.variantMrpFrom;
+      variantIdFrom = stat.variantIdFrom.toString();
+      variantNameFrom = stat.variantNameFrom;
     }
     return {
       ...plain,
       hasVariants: !!stat,
       variantPriceFrom: priceFrom,
       variantMrpFrom: mrpFrom,
+      variantIdFrom,
+      variantNameFrom,
+      // cheapest pack of all (base + ACTIVE variants)
+      minPackPrice: stat ? Math.min(basePrice, stat.minVariantPrice) : basePrice,
+      // pack sizes to choose from: every ACTIVE variant + the base pack
+      variantCount: stat ? stat.count + 1 : 1,
     };
   });
 }

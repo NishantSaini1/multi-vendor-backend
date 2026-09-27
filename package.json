@@ -12,7 +12,10 @@
     "format": "prettier --write .",
     "test": "jest --runInBand",
     "test:watch": "jest --watch",
-    "seed": "tsx src/utils/seed.ts"
+    "seed": "tsx src/utils/seed.ts",
+    "seed:coupons": "tsx src/utils/seedCoupons.ts",
+    "fix:review-indexes": "tsx src/utils/fixReviewIndexes.ts",
+    "seed:support": "tsx src/utils/seedSupport.ts"
   },
   "engines": {
     "node": "24.x"

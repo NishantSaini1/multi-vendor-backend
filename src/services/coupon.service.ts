@@ -115,7 +115,38 @@ export async function applyCoupon(
   ctx: CouponApplicationContext,
   session: ClientSession,
 ): Promise<{ coupon: ICoupon; discount: number }> {
-  const coupon = await Coupon.findOne({ code: code.toUpperCase() }).session(session);
+  const { coupon, discount } = await evaluateCoupon(code, ctx, session);
+  coupon.usedCount += 1;
+  await coupon.save({ session });
+  return { coupon, discount };
+}
+
+// Read-only "what would this code do to my cart?" — the exact same checks
+// and discount math as applyCoupon, without consuming a use. Backs
+// POST /coupons/preview so the app can show the real discount (or the real
+// reason it won't apply) before the order is placed; POST /orders still
+// re-validates, so a preview can never be used to bypass anything.
+export async function previewCoupon(code: string, ctx: CouponApplicationContext) {
+  const { coupon, discount } = await evaluateCoupon(code, ctx);
+  const rounded = Math.round(discount * 100) / 100;
+  return {
+    code: coupon.code,
+    discount: rounded,
+    subtotalAfterDiscount: Math.max(0, Math.round((ctx.subtotal - rounded) * 100) / 100),
+    discountType: coupon.discountType,
+    discountValue: coupon.discountValue,
+    minimumOrder: coupon.minimumOrder,
+    maximumDiscount: coupon.maximumDiscount,
+    endDate: coupon.endDate,
+  };
+}
+
+async function evaluateCoupon(
+  code: string,
+  ctx: CouponApplicationContext,
+  session?: ClientSession,
+): Promise<{ coupon: ICoupon; discount: number }> {
+  const coupon = await Coupon.findOne({ code: code.toUpperCase() }).session(session ?? null);
   if (!coupon) throw ApiError.notFound('Coupon code not found', 'COUPON_NOT_FOUND');
   if (coupon.status !== GENERIC_STATUS.ACTIVE) {
     throw ApiError.unprocessable('This coupon is not currently active', 'COUPON_NOT_ACTIVE');
@@ -154,7 +185,7 @@ export async function applyCoupon(
     customerId: ctx.customerId,
     couponCode: coupon.code,
     status: { $ne: 'CANCELLED' },
-  }).session(session);
+  }).session(session ?? null);
   if (usedByCustomer >= (coupon.perUserLimit ?? 1)) {
     throw ApiError.unprocessable('You have already used this coupon the maximum number of times', 'COUPON_PER_USER_LIMIT_REACHED');
   }
@@ -165,7 +196,7 @@ export async function applyCoupon(
     const priorOrders = await Order.countDocuments({
       customerId: ctx.customerId,
       status: { $ne: 'CANCELLED' },
-    }).session(session);
+    }).session(session ?? null);
     if (priorOrders > 0) {
       throw ApiError.unprocessable('This coupon is only valid on your first order', 'COUPON_FIRST_ORDER_ONLY');
     }
@@ -174,9 +205,6 @@ export async function applyCoupon(
   let discount = coupon.discountType === DISCOUNT_TYPES.PERCENTAGE ? ctx.subtotal * (coupon.discountValue / 100) : coupon.discountValue;
   if (coupon.maximumDiscount !== undefined) discount = Math.min(discount, coupon.maximumDiscount);
   discount = Math.min(discount, ctx.subtotal);
-
-  coupon.usedCount += 1;
-  await coupon.save({ session });
 
   return { coupon, discount };
 }

@@ -26,7 +26,11 @@ import { InstamartProduct } from '../models/InstamartProduct';
 import { InstamartGlobalProduct } from '../models/InstamartGlobalProduct';
 import { InstamartVariant } from '../models/InstamartVariant';
 import { Inventory } from '../models/Inventory';
+import { Banner } from '../models/Banner';
+import { seedCoupons } from './seedCoupons';
+import { seedSupport } from './seedSupport';
 import { ADMIN_ROLES } from '../constants/roles';
+import { BANNER_MEDIA_TYPES, BANNER_PLACEMENTS } from '../constants/enums';
 
 const DEV_PASSWORD = process.env.SEED_DEFAULT_PASSWORD || 'ChangeMe123';
 
@@ -831,6 +835,98 @@ async function seedDeliveryPartners(locations: Awaited<ReturnType<typeof seedLoc
   }
 }
 
+// Home-screen hero carousel for the customer app (placement FOOD /
+// INSTAMART). Image banners are always seeded; a VIDEO banner is added per
+// tab only when its clip URL is provided via env (upload one through
+// POST /uploads/video and paste the returned `url`), so the seed never
+// points at media nobody has vetted.
+async function seedHomeBanners() {
+  const unsplash = (id: string) => `https://images.unsplash.com/photo-${id}?w=1200&q=80`;
+  const banners: Array<Record<string, unknown>> = [
+    {
+      title: 'Feast mode: ON',
+      subtitle: 'Top restaurants near you, delivered hot',
+      ctaLabel: 'Order Now',
+      image: unsplash('1504674900247-0877df9cc836'),
+      placement: BANNER_PLACEMENTS.FOOD,
+      businessType: 'FOOD',
+      sortOrder: 1,
+    },
+    {
+      title: 'Pizza night, sorted',
+      subtitle: 'Cheesy, crispy and at your door fast',
+      ctaLabel: 'Grab a slice',
+      image: unsplash('1565299624946-b28f40a0ae38'),
+      placement: BANNER_PLACEMENTS.FOOD,
+      businessType: 'FOOD',
+      sortOrder: 2,
+    },
+    {
+      title: 'Eat fresh, feel good',
+      subtitle: 'Healthy bowls and salads',
+      ctaLabel: 'Explore',
+      image: unsplash('1540189549336-e6e99c3679fe'),
+      placement: BANNER_PLACEMENTS.FOOD,
+      businessType: 'FOOD',
+      sortOrder: 3,
+    },
+    {
+      title: 'Fresh groceries in minutes',
+      subtitle: 'Fruits, veggies & daily essentials',
+      ctaLabel: 'Shop Now',
+      image: unsplash('1542838132-92c53300491e'),
+      placement: BANNER_PLACEMENTS.INSTAMART,
+      businessType: 'INSTAMART',
+      sortOrder: 1,
+    },
+    {
+      title: 'Farm to doorstep',
+      subtitle: 'Handpicked produce, every day',
+      ctaLabel: 'Shop Fresh',
+      image: unsplash('1488459716781-31db52582fe9'),
+      placement: BANNER_PLACEMENTS.INSTAMART,
+      businessType: 'INSTAMART',
+      sortOrder: 2,
+    },
+    {
+      title: 'Stock up & save',
+      subtitle: 'Breakfast, snacks and more',
+      ctaLabel: 'See Deals',
+      image: unsplash('1606787366850-de6330128bfc'),
+      placement: BANNER_PLACEMENTS.INSTAMART,
+      businessType: 'INSTAMART',
+      sortOrder: 3,
+    },
+  ];
+
+  const videos = [
+    { url: process.env.SEED_FOOD_BANNER_VIDEO_URL, placement: BANNER_PLACEMENTS.FOOD, businessType: 'FOOD', title: 'Watch it sizzle', image: unsplash('1504674900247-0877df9cc836') },
+    { url: process.env.SEED_INSTAMART_BANNER_VIDEO_URL, placement: BANNER_PLACEMENTS.INSTAMART, businessType: 'INSTAMART', title: 'Freshness you can see', image: unsplash('1542838132-92c53300491e') },
+  ];
+  for (const video of videos) {
+    if (!video.url) continue;
+    banners.push({
+      title: video.title,
+      subtitle: 'Tap to explore',
+      ctaLabel: 'Explore',
+      image: video.image,
+      mediaType: BANNER_MEDIA_TYPES.VIDEO,
+      videoUrl: video.url,
+      placement: video.placement,
+      businessType: video.businessType,
+      sortOrder: 0,
+    });
+  }
+
+  for (const data of banners) {
+    await Banner.findOneAndUpdate(
+      { title: data.title, placement: data.placement },
+      { ...data, status: 'ACTIVE' },
+      { upsert: true, new: true },
+    );
+  }
+}
+
 async function run() {
   await connectDatabase();
   logger.info('Seeding development data...');
@@ -846,6 +942,9 @@ async function run() {
   await seedInstamartCatalog(stores, storeTypeIdByKey);
   await seedCustomers();
   await seedDeliveryPartners(locations);
+  await seedHomeBanners();
+  await seedCoupons();
+  await seedSupport();
 
   logger.info(`Seed complete. Default password for seeded accounts: ${DEV_PASSWORD}`);
   await disconnectDatabase();

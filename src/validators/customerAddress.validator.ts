@@ -14,6 +14,12 @@ export const createCustomerAddressSchema = z.object({
     longitude: z.number(),
     type: z.enum([ADDRESS_TYPES.HOME, ADDRESS_TYPES.WORK, ADDRESS_TYPES.OTHER]).default(ADDRESS_TYPES.HOME),
     isDefault: z.boolean().default(false),
+    contactName: z.string().trim().min(1).max(80).optional(),
+    // 10-digit Indian mobile number (starts 6-9), no country code.
+    contactPhone: z
+      .string()
+      .regex(/^[6-9]\d{9}$/, 'contactPhone must be a valid 10-digit mobile number')
+      .optional(),
   }),
 });
 

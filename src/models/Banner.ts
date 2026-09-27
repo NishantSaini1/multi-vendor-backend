@@ -1,11 +1,17 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { BANNER_PLACEMENTS, GENERIC_STATUS } from '../constants/enums';
+import { BANNER_MEDIA_TYPES, BANNER_PLACEMENTS, GENERIC_STATUS } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 
 export interface IBanner extends Document {
   _id: Types.ObjectId;
   title: string;
+  subtitle?: string;
+  ctaLabel?: string;
+  // Always required — for VIDEO banners this is the poster shown while the
+  // clip loads (or if it fails), so the carousel never shows a blank card.
   image: string;
+  mediaType: string;
+  videoUrl?: string;
   placement: string;
   // Orthogonal to `placement` (which is GLOBAL/LOCATION/FOOD/INSTAMART/VENDOR/
   // STORE — a targeting *scope*): businessType optionally narrows a
@@ -28,7 +34,11 @@ export interface IBanner extends Document {
 const bannerSchema = new Schema<IBanner>(
   {
     title: { type: String, required: true },
+    subtitle: { type: String },
+    ctaLabel: { type: String },
     image: { type: String, required: true },
+    mediaType: { type: String, enum: Object.values(BANNER_MEDIA_TYPES), default: BANNER_MEDIA_TYPES.IMAGE },
+    videoUrl: { type: String },
     placement: { type: String, enum: Object.values(BANNER_PLACEMENTS), required: true, index: true },
     businessType: { type: String, enum: Object.values(BUSINESS_TYPES) },
     locationId: { type: Schema.Types.ObjectId, ref: 'Location' },

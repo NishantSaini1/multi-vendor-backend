@@ -9,6 +9,8 @@ export interface IOrderAddressSnapshot {
   pincode: string;
   latitude: number;
   longitude: number;
+  contactName?: string;
+  contactPhone?: string;
 }
 
 export interface IOrder extends Document {
@@ -57,6 +59,8 @@ const addressSnapshotSchema = new Schema<IOrderAddressSnapshot>(
     pincode: { type: String, required: true },
     latitude: { type: Number, required: true },
     longitude: { type: Number, required: true },
+    contactName: { type: String },
+    contactPhone: { type: String },
   },
   { _id: false },
 );

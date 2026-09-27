@@ -36,6 +36,17 @@ export const changePhoneSchema = z.object({
   }),
 });
 
+// Customer self-edit. Empty string clears email / photo.
+export const updateMeSchema = z.object({
+  body: z
+    .object({
+      name: z.string().trim().min(1, 'Name cannot be empty').max(80).optional(),
+      email: z.string().trim().toLowerCase().email('Enter a valid email address').or(z.literal('')).optional(),
+      profileImage: z.string().url().or(z.literal('')).optional(),
+    })
+    .strict(),
+});
+
 export const vendorLoginSchema = z.object({
   body: z.object({
     identifier: z.string().min(3),

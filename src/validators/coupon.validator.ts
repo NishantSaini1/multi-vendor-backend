@@ -66,6 +66,19 @@ export const listCouponsQuerySchema = z.object({
   }),
 });
 
+export const previewCouponSchema = z.object({
+  body: z.object({
+    code: z.string().trim().min(1).max(30),
+    locationId: objectId,
+    businessType: z.enum([BUSINESS_TYPES.FOOD, BUSINESS_TYPES.INSTAMART]),
+    vendorId: objectId.optional(),
+    storeId: objectId.optional(),
+    subtotal: z.number().nonnegative(),
+    // global food item ids of the cart lines (for item-scoped coupons)
+    foodItemIds: z.array(objectId).optional(),
+  }),
+});
+
 export const listActiveCouponsQuerySchema = z.object({
   query: z.object({
     locationId: objectId,

@@ -112,4 +112,61 @@ describe('Banners: admin CRUD and the public "active banners" query', () => {
     const getRes = await request(app).get(`/api/v1/banners/${globalBannerId}`).set('Authorization', `Bearer ${marketingToken}`);
     expect(getRes.status).toBe(404);
   });
+
+  it('rejects a VIDEO banner with no videoUrl', async () => {
+    const res = await request(app)
+      .post('/api/v1/banners')
+      .set('Authorization', `Bearer ${marketingToken}`)
+      .send({ title: 'No clip', image: 'https://example.com/p.jpg', mediaType: 'VIDEO', placement: 'FOOD', businessType: 'FOOD' });
+    expect(res.status).toBe(422);
+  });
+
+  it('serves a FOOD video banner (with subtitle/ctaLabel) on the Food home query, scoped by location', async () => {
+    const create = await request(app)
+      .post('/api/v1/banners')
+      .set('Authorization', `Bearer ${marketingToken}`)
+      .send({
+        title: 'Sizzle',
+        subtitle: 'Hot and fresh',
+        ctaLabel: 'Order Now',
+        image: 'https://example.com/poster.jpg',
+        mediaType: 'VIDEO',
+        videoUrl: 'https://example.com/clip.mp4',
+        placement: 'FOOD',
+        businessType: 'FOOD',
+        locationId,
+      });
+    expect(create.status).toBe(201);
+
+    const res = await request(app).get('/api/v1/banners/active').query({ placement: 'FOOD', businessType: 'FOOD', locationId });
+    expect(res.body.data).toHaveLength(1);
+    expect(res.body.data[0]).toMatchObject({
+      mediaType: 'VIDEO',
+      videoUrl: 'https://example.com/clip.mp4',
+      subtitle: 'Hot and fresh',
+      ctaLabel: 'Order Now',
+    });
+
+    const elsewhere = await request(app)
+      .get('/api/v1/banners/active')
+      .query({ placement: 'FOOD', businessType: 'FOOD', locationId: '507f1f77bcf86cd799439011' });
+    expect(elsewhere.body.data).toHaveLength(0);
+
+    const instamart = await request(app).get('/api/v1/banners/active').query({ placement: 'INSTAMART', businessType: 'INSTAMART' });
+    expect(instamart.body.data).toHaveLength(0);
+  });
+
+  it('defaults mediaType to IMAGE and refuses to flip a banner to VIDEO without a videoUrl', async () => {
+    const create = await request(app)
+      .post('/api/v1/banners')
+      .set('Authorization', `Bearer ${marketingToken}`)
+      .send({ title: 'Still', image: 'https://example.com/s.jpg', placement: 'INSTAMART', businessType: 'INSTAMART' });
+    expect(create.body.data.mediaType).toBe('IMAGE');
+
+    const flip = await request(app)
+      .patch(`/api/v1/banners/${create.body.data._id}`)
+      .set('Authorization', `Bearer ${marketingToken}`)
+      .send({ mediaType: 'VIDEO' });
+    expect(flip.status).toBe(400);
+  });
 });

@@ -23,6 +23,12 @@ export const listActive = catchAsync(async (req: Request, res: Response) => {
   sendSuccess(res, coupons);
 });
 
+export const preview = catchAsync(async (req: Request, res: Response) => {
+  const { code, ...ctx } = req.body;
+  const result = await couponService.previewCoupon(code, { ...ctx, customerId: req.user!.userId });
+  sendSuccess(res, result);
+});
+
 export const create = catchAsync(async (req: Request, res: Response) => {
   const coupon = await couponService.createCoupon(req.body);
   sendSuccess(res, coupon, 'Coupon created', 201);

@@ -11,6 +11,7 @@ import {
   couponIdParamSchema,
   listCouponsQuerySchema,
   listActiveCouponsQuerySchema,
+  previewCouponSchema,
 } from '../validators/coupon.validator';
 
 const router = Router();
@@ -25,10 +26,15 @@ router.get(
   controller.listActive,
 );
 
-// Admin-only management surface. Applying a coupon to an order (validating
-// eligibility, computing the discount, incrementing usedCount) happens as
-// part of POST /orders itself — see order.service.createOrder — not through
-// a route here, so the same money math never lives in two places.
+// Read-only check of a code against the customer's current cart — returns
+// the discount it would give, or the same error POST /orders would throw.
+// Shares coupon.service's evaluateCoupon with order creation, so the money
+// math still lives in one place; it never consumes a use.
+router.post('/preview', authenticate('CUSTOMER'), validate(previewCouponSchema), controller.preview);
+
+// Admin-only management surface. Actually applying a coupon (incrementing
+// usedCount) happens as part of POST /orders itself — see
+// order.service.createOrder.
 router.use(authenticateAdmin);
 
 router.get('/', requirePermission(PERMISSIONS.COUPON_VIEW), validate(listCouponsQuerySchema), controller.list);

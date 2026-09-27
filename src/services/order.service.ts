@@ -21,6 +21,7 @@ import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { generateOrderNumber } from '../utils/orderNumber';
 import { checkServiceability } from './serviceability.service';
+import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
 import * as commissionService from './commission.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
@@ -264,14 +265,19 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   const address = await CustomerAddress.findOne({ _id: data.addressId, customerId });
   if (!address) throw ApiError.notFound('Address not found', 'ADDRESS_NOT_FOUND');
 
-  const location = await Location.findById(address.locationId);
-  if (!location || location.status !== GENERIC_STATUS.ACTIVE) {
-    throw ApiError.unprocessable('This location is not currently serviceable', 'LOCATION_NOT_ACTIVE');
-  }
-
+  // Serviceability decides the serving location from the address coordinates
+  // (zone-aware — see serviceability.service.ts), and also checks the chosen
+  // restaurant / store actually reaches this address.
   const serviceability = await checkServiceability(address.latitude, address.longitude, businessType);
   if (!serviceability.serviceable) {
     throw ApiError.unprocessable('This address is not currently serviceable', serviceability.reason ?? 'NOT_SERVICEABLE');
+  }
+  // The address row's stored locationId was picked by the client at save
+  // time and can be stale/wrong; the location resolved from coordinates is
+  // the one that actually serves it.
+  const location = serviceability.location as InstanceType<typeof Location>;
+  if (!location || location.status !== GENERIC_STATUS.ACTIVE) {
+    throw ApiError.unprocessable('This location is not currently serviceable', 'LOCATION_NOT_ACTIVE');
   }
   const zone = serviceability.deliveryZone as { deliveryFee: number; freeDeliveryAbove: number; estimatedDeliveryTime: number };
 
@@ -287,6 +293,15 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
     if (!vendor.isOpen) throw ApiError.unprocessable('This vendor is currently closed', 'VENDOR_CLOSED');
     if (vendor.locationId.toString() !== location.id) {
       throw ApiError.badRequest('Vendor does not belong to the delivery address location', 'VENDOR_LOCATION_MISMATCH');
+    }
+    // Same location isn't enough — the restaurant has to reach this address.
+    const distanceKm = haversineDistanceKm(address.latitude, address.longitude, vendor.latitude, vendor.longitude);
+    const radiusKm = vendor.serviceRadius ?? 5;
+    if (distanceKm > radiusKm) {
+      throw ApiError.unprocessable(
+        `This restaurant delivers within ${radiusKm} km — your address is ${Math.round(distanceKm * 10) / 10} km away`,
+        'OUT_OF_SELLER_RANGE',
+      );
     }
     vendorId = vendor.id;
   } else {
@@ -416,6 +431,8 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
               pincode: address.pincode,
               latitude: address.latitude,
               longitude: address.longitude,
+              contactName: address.contactName,
+              contactPhone: address.contactPhone,
             },
             status: 'PENDING',
           },

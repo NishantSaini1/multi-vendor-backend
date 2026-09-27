@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import { BANNER_PLACEMENTS, GENERIC_STATUS } from '../constants/enums';
+import { BANNER_MEDIA_TYPES, BANNER_PLACEMENTS, GENERIC_STATUS } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 
 const businessType = z.enum(Object.values(BUSINESS_TYPES) as [string, ...string[]]);
+const mediaType = z.enum(Object.values(BANNER_MEDIA_TYPES) as [string, ...string[]]);
 
 const objectId = z.string().length(24);
 
@@ -17,7 +18,11 @@ export const createBannerSchema = z.object({
   body: z
     .object({
       title: z.string().trim().min(1),
+      subtitle: z.string().trim().max(120).optional(),
+      ctaLabel: z.string().trim().max(24).optional(),
       image: z.string().trim().min(1),
+      mediaType: mediaType.default(BANNER_MEDIA_TYPES.IMAGE),
+      videoUrl: z.string().trim().url().optional(),
       placement: z.enum(Object.values(BANNER_PLACEMENTS) as [string, ...string[]]),
       businessType: businessType.optional(),
       locationId: objectId.optional(),
@@ -31,6 +36,10 @@ export const createBannerSchema = z.object({
     })
     .refine(placementRefinement, {
       message: 'LOCATION placement requires locationId, VENDOR requires vendorId, STORE requires storeId',
+    })
+    .refine((data) => data.mediaType !== BANNER_MEDIA_TYPES.VIDEO || !!data.videoUrl, {
+      message: 'VIDEO banners require videoUrl',
+      path: ['videoUrl'],
     })
     .refine((data) => !data.startDate || !data.endDate || data.startDate < data.endDate, {
       message: 'startDate must be before endDate',
@@ -46,7 +55,11 @@ export const updateBannerSchema = z.object({
   params: z.object({ id: objectId }),
   body: z.object({
     title: z.string().trim().min(1).optional(),
+    subtitle: z.string().trim().max(120).optional(),
+    ctaLabel: z.string().trim().max(24).optional(),
     image: z.string().trim().min(1).optional(),
+    mediaType: mediaType.optional(),
+    videoUrl: z.string().trim().url().optional(),
     businessType: businessType.optional(),
     linkType: z.string().optional(),
     linkValue: z.string().optional(),

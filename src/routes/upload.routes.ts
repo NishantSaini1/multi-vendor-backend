@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as controller from '../controllers/upload.controller';
 import { authenticateAny } from '../middleware/auth.middleware';
-import { uploadImage } from '../middleware/upload.middleware';
+import { uploadImage, uploadVideo } from '../middleware/upload.middleware';
 
 const router = Router();
 
@@ -12,6 +12,7 @@ const router = Router();
 router.use(authenticateAny);
 
 router.post('/', uploadImage, controller.create);
+router.post('/video', uploadVideo, controller.createVideo);
 router.delete('/', controller.remove);
 
 export default router;

@@ -10,7 +10,13 @@ export const create = catchAsync(async (req: Request, res: Response) => {
   sendSuccess(res, result, 'Image uploaded', 201);
 });
 
-export const remove = catchAsync(async (req: Request, res: Response) => {
+export const createVideo = catchAsync(async (req: Request, res: Response) => {
+  if (!req.file) throw ApiError.badRequest('No video file was provided (field name: "video")', 'FILE_REQUIRED');
+  const result = await uploadService.uploadVideoBuffer(req.file.buffer);
+  sendSuccess(res, result, 'Video uploaded', 201);
+});
+
+export const remove =catchAsync(async (req: Request, res: Response) => {
   const publicId = req.query.publicId as string;
   if (!publicId) throw ApiError.badRequest('publicId is required', 'PUBLIC_ID_REQUIRED');
   await uploadService.deleteImage(publicId);

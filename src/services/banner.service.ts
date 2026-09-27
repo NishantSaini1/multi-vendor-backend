@@ -1,7 +1,7 @@
 import { Banner } from '../models/Banner';
 import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
-import { GENERIC_STATUS } from '../constants/enums';
+import { BANNER_MEDIA_TYPES, GENERIC_STATUS } from '../constants/enums';
 
 export async function listBanners(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -28,6 +28,11 @@ export async function getBannerById(id: string) {
 export async function updateBanner(id: string, data: Record<string, unknown>) {
   const banner = await findBannerOrThrow(id);
   Object.assign(banner, data);
+  // Checked against the merged document (not just the patch), since a
+  // PATCH may flip mediaType to VIDEO while relying on an existing videoUrl.
+  if (banner.mediaType === BANNER_MEDIA_TYPES.VIDEO && !banner.videoUrl) {
+    throw ApiError.badRequest('VIDEO banners require videoUrl', 'BANNER_VIDEO_URL_REQUIRED');
+  }
   await banner.save();
   return banner;
 }

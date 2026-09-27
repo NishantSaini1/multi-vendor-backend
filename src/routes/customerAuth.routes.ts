@@ -10,6 +10,7 @@ import {
   refreshTokenSchema,
   changePhoneSchema,
   sessionParamsSchema,
+  updateMeSchema,
 } from '../validators/auth.validator';
 
 const router = Router();
@@ -20,6 +21,9 @@ router.post('/resend-otp', otpSendRateLimiter, validate(resendOtpSchema), contro
 router.post('/refresh', validate(refreshTokenSchema), controller.refresh);
 router.post('/logout', validate(refreshTokenSchema), controller.logout);
 router.get('/me', authenticateCustomer, controller.me);
+// Self-service profile edit (name / email / photo). Phone changes stay on
+// the OTP-verified /change-phone flow.
+router.patch('/me', authenticateCustomer, validate(updateMeSchema), controller.updateMe);
 
 router.post('/change-phone', authenticateCustomer, otpVerifyRateLimiter, validate(changePhoneSchema), controller.changePhone);
 router.post('/logout-all', authenticateCustomer, controller.logoutAll);

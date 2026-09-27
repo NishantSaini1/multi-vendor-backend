@@ -70,6 +70,8 @@ export const updateOrderSchema = z.object({
         pincode: z.string().min(4).max(10).optional(),
         latitude: z.number().optional(),
         longitude: z.number().optional(),
+        contactName: z.string().trim().min(1).max(80).optional(),
+        contactPhone: z.string().regex(/^[6-9]\d{9}$/).optional(),
       })
       .optional(),
   }),

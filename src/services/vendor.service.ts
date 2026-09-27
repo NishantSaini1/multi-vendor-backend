@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { Vendor } from '../models/Vendor';
 import { VendorDocument } from '../models/VendorDocument';
 import { VendorFoodItem } from '../models/VendorFoodItem';
+import { FoodCategory } from '../models/FoodCategory';
 import { Location } from '../models/Location';
 import { Commission } from '../models/Commission';
 import { ApiError } from '../utils/ApiError';
@@ -199,7 +200,32 @@ export async function getVendorProducts(
       .limit(pagination.limit),
     VendorFoodItem.countDocuments(query),
   ]);
-  return { items, total };
+
+  // Resolve each item's category name here (one query), since the customer
+  // /food/categories listing hides vendor-private and INACTIVE categories —
+  // without this a menu can't label items filed under those. Additive
+  // fields only; the populated globalFoodItemId shape is unchanged.
+  const categoryIds = [
+    ...new Set(
+      items
+        .map((item) => (item.globalFoodItemId as unknown as { categoryId?: mongoose.Types.ObjectId } | null)?.categoryId?.toString())
+        .filter((cid): cid is string => Boolean(cid)),
+    ),
+  ];
+  const categories = categoryIds.length
+    ? await FoodCategory.find({ _id: { $in: categoryIds } }).select('name displayOrder')
+    : [];
+  const categoryById = new Map(categories.map((c) => [c.id as string, c]));
+  const withCategory = items.map((item) => {
+    const cid = (item.globalFoodItemId as unknown as { categoryId?: mongoose.Types.ObjectId } | null)?.categoryId?.toString();
+    const category = cid ? categoryById.get(cid) : undefined;
+    return {
+      ...item.toJSON(),
+      categoryName: category?.name ?? null,
+      categoryDisplayOrder: (category as unknown as { displayOrder?: number } | undefined)?.displayOrder ?? null,
+    };
+  });
+  return { items: withCategory, total };
 }
 
 export async function listVendorDocuments(vendorId: string, user: JwtPayload) {

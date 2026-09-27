@@ -19,6 +19,32 @@ async function findOrderOrThrow(orderId: string) {
   return order;
 }
 
+// Sandbox mode: local development with no Razorpay keys configured. The
+// config falls back to placeholder credentials, which Razorpay rejects — that
+// used to surface as a bare 500 "Internal server error" on the app's payment
+// screen. Instead, dev issues a local `order_dev_…` id and accepts the app's
+// dev-simulated signature for those ids only. Never active in production or
+// tests (tests mock the SDK against the real code path).
+// (Exported so wallet top-ups share the exact same sandbox/gateway rules.)
+export const SANDBOX_ORDER_PREFIX = 'order_dev_';
+export const SANDBOX_SIGNATURE = 'dev_simulated_signature';
+export function isPaymentSandbox(): boolean {
+  return env.isDevelopment && (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_SECRET);
+}
+
+export function gatewayError(err: unknown): ApiError {
+  const e = err as { statusCode?: number; error?: { description?: string; code?: string } };
+  logger.error({ err }, 'Razorpay request failed');
+  if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_SECRET) {
+    return new ApiError(503, 'Online payment is not configured on the server', 'PAYMENT_GATEWAY_NOT_CONFIGURED');
+  }
+  return new ApiError(
+    502,
+    e?.error?.description ? `Payment gateway error: ${e.error.description}` : 'Payment gateway is unavailable, please try again',
+    'PAYMENT_GATEWAY_ERROR',
+  );
+}
+
 function assertOwnsOrder(user: JwtPayload, customerId: string): void {
   if (user.userId !== customerId) {
     throw ApiError.forbidden('You do not have access to this order', 'ORDER_FORBIDDEN');
@@ -41,12 +67,25 @@ export async function createRazorpayOrder(orderId: string, user: JwtPayload) {
 
   let payment = await Payment.findOne({ orderId: order.id, status: PAYMENT_STATUS.PENDING });
 
-  const razorpayOrder = await razorpay.orders.create({
-    amount: Math.round(order.total * 100),
-    currency: 'INR',
-    receipt: order.orderNumber,
-    notes: { orderId: order.id },
-  });
+  let razorpayOrder: { id: string; amount: number | string; currency: string };
+  if (isPaymentSandbox()) {
+    razorpayOrder = {
+      id: `${SANDBOX_ORDER_PREFIX}${order.id}_${Date.now()}`,
+      amount: Math.round(order.total * 100),
+      currency: 'INR',
+    };
+  } else {
+    try {
+      razorpayOrder = await razorpay.orders.create({
+        amount: Math.round(order.total * 100),
+        currency: 'INR',
+        receipt: order.orderNumber,
+        notes: { orderId: order.id },
+      });
+    } catch (err) {
+      throw gatewayError(err);
+    }
+  }
 
   if (!payment) {
     payment = await Payment.create({
@@ -83,7 +122,12 @@ export async function verifyPayment(
   const payment = await Payment.findOne({ orderId: order.id, razorpayOrderId: data.razorpayOrderId });
   if (!payment) throw ApiError.notFound('Payment record not found for this order', 'PAYMENT_NOT_FOUND');
 
-  const valid = verifyCheckoutSignature(data.razorpayOrderId, data.razorpayPaymentId, data.razorpaySignature);
+  const sandboxPayment =
+    isPaymentSandbox() &&
+    data.razorpayOrderId.startsWith(SANDBOX_ORDER_PREFIX) &&
+    data.razorpaySignature === SANDBOX_SIGNATURE;
+  const valid =
+    sandboxPayment || verifyCheckoutSignature(data.razorpayOrderId, data.razorpayPaymentId, data.razorpaySignature);
   if (!valid) {
     payment.status = PAYMENT_STATUS.FAILED;
     payment.failureReason = 'Signature verification failed';

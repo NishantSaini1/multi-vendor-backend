@@ -119,6 +119,31 @@ export const NOTIFICATION_TYPES = {
   PAYMENT_SUCCESS: 'PAYMENT_SUCCESS',
   REFUND_COMPLETED: 'REFUND_COMPLETED',
   SETTLEMENT_COMPLETED: 'SETTLEMENT_COMPLETED',
+  // Customer-facing: support replied to / updated one of their tickets.
+  SUPPORT_UPDATE: 'SUPPORT_UPDATE',
+} as const;
+
+// Customer help-desk tickets (see models/SupportTicket.ts).
+export const SUPPORT_TICKET_STATUS = {
+  OPEN: 'OPEN',
+  IN_PROGRESS: 'IN_PROGRESS',
+  // support replied and is waiting on the customer
+  AWAITING_CUSTOMER: 'AWAITING_CUSTOMER',
+  RESOLVED: 'RESOLVED',
+  CLOSED: 'CLOSED',
+} as const;
+
+export const SUPPORT_TICKET_PRIORITY = {
+  LOW: 'LOW',
+  NORMAL: 'NORMAL',
+  HIGH: 'HIGH',
+  URGENT: 'URGENT',
+} as const;
+
+export const SUPPORT_MESSAGE_SENDER = {
+  CUSTOMER: 'CUSTOMER',
+  ADMIN: 'ADMIN',
+  SYSTEM: 'SYSTEM',
 } as const;
 
 export const REVIEW_TARGET_TYPES = {
@@ -140,6 +165,13 @@ export const BANNER_PLACEMENTS = {
   INSTAMART: 'INSTAMART',
   VENDOR: 'VENDOR',
   STORE: 'STORE',
+} as const;
+
+// IMAGE banners render `image`; VIDEO banners autoplay `videoUrl` (muted,
+// looping) with `image` kept as the poster/fallback frame.
+export const BANNER_MEDIA_TYPES = {
+  IMAGE: 'IMAGE',
+  VIDEO: 'VIDEO',
 } as const;
 
 export const DEVICE_TYPES = {
