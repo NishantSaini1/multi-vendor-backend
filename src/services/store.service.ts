@@ -11,6 +11,8 @@ import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { findMatchingZone } from './deliveryZone.service';
+import { findSellersInRange } from '../utils/geoQuery';
+import { haversineDistanceKm } from '../utils/geo';
 import { StoreType } from '../models/StoreType';
 import { STORE_APPROVAL_STATUS, STORE_STATUS, GENERIC_STATUS } from '../constants/enums';
 
@@ -20,6 +22,21 @@ export async function listStores(filter: Record<string, unknown>, pagination: Pa
     Store.countDocuments(filter),
   ]);
   return { items, total };
+}
+
+// Customer browse by delivery address: only stores whose own serviceRadius
+// reaches (lat, lng) — the same rule order creation enforces — nearest first.
+export function listStoresInRange(filter: Record<string, unknown>, pagination: PaginationParams, lat: number, lng: number) {
+  return findSellersInRange(Store, filter, pagination, lat, lng);
+}
+
+// Ids of a location's live stores that deliver to (lat, lng) — scopes a
+// customer's product browse to stores that can actually deliver.
+export async function storeIdsInRange(locationId: string, coords: { lat: number; lng: number }) {
+  const stores = await Store.find({ locationId, status: STORE_STATUS.ACTIVE }).select('latitude longitude serviceRadius').lean();
+  return stores
+    .filter((s) => haversineDistanceKm(coords.lat, coords.lng, s.latitude, s.longitude) <= (s.serviceRadius ?? 5))
+    .map((s) => s._id);
 }
 
 // Location -> Zone -> Store: a store's zone is derived from its own
@@ -42,19 +59,6 @@ async function assertStoreTypesExist(storeTypeIds: string[]): Promise<void> {
   if (count !== new Set(storeTypeIds).size) throw ApiError.notFound('Store type not found', 'STORE_TYPE_NOT_FOUND');
 }
 
-// A store may carry several types (e.g. a Supermarket = Grocery + Bakery &
-// Dairy); the "one store per type per zone" rule applies per individual
-// type, so this checks the whole array for any overlap with an existing
-// store's types in the same zone (mirroring the DB's multikey unique index).
-async function assertNoStoreTypeOverlapInZone(deliveryZoneId: string, storeTypeIds: string[], excludeStoreId?: string): Promise<void> {
-  const filter: Record<string, unknown> = { deliveryZoneId, storeTypeIds: { $in: storeTypeIds } };
-  if (excludeStoreId) filter._id = { $ne: excludeStoreId };
-  const exists = await Store.exists(filter);
-  if (exists) {
-    throw ApiError.conflict('A store with one of these types already exists in this zone', 'STORE_TYPE_ALREADY_EXISTS_IN_ZONE');
-  }
-}
-
 export async function createStore(data: Record<string, unknown>) {
   const locationExists = await Location.exists({ _id: data.locationId });
   if (!locationExists) throw ApiError.notFound('Location not found', 'LOCATION_NOT_FOUND');
@@ -62,8 +66,6 @@ export async function createStore(data: Record<string, unknown>) {
   const storeTypeIds = data.storeTypeIds as string[];
   await assertStoreTypesExist(storeTypeIds);
   const zone = await resolveZoneForStore(data.locationId as string, data.latitude as number, data.longitude as number);
-  await assertNoStoreTypeOverlapInZone(zone.id, storeTypeIds);
-
   const password = await hashPassword(data.password as string);
   return Store.create({
     ...data,
@@ -112,11 +114,6 @@ export async function updateStore(id: string, data: Record<string, unknown>, use
   }
 
   if (data.storeTypeIds !== undefined) await assertStoreTypesExist(data.storeTypeIds as string[]);
-
-  const finalStoreTypeIds = (data.storeTypeIds as string[] | undefined) ?? store.storeTypeIds.map((id) => id.toString());
-  if (data.storeTypeIds !== undefined || resolvedZoneId !== store.deliveryZoneId.toString()) {
-    await assertNoStoreTypeOverlapInZone(resolvedZoneId, finalStoreTypeIds, store.id);
-  }
 
   // The model has no pre-save hashing hook (see createStore, which hashes
   // explicitly) — a plaintext password assigned directly here would silently

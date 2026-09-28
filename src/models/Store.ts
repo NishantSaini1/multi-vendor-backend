@@ -25,6 +25,10 @@ export interface IStore extends Document {
   address: string;
   latitude: number;
   longitude: number;
+  // How far (km) from its own latitude/longitude the store delivers — same
+  // rule as a Vendor's serviceRadius: customers beyond it don't see the store
+  // and can't order from it.
+  serviceRadius: number;
   status: string;
   // Onboarding/approval workflow — see STORE_APPROVAL_STATUS. Separate from
   // `status`, which is the operational open/closed-for-business signal.
@@ -58,6 +62,7 @@ const storeSchema = new Schema<IStore>(
     address: { type: String, required: true },
     latitude: { type: Number, required: true },
     longitude: { type: Number, required: true },
+    serviceRadius: { type: Number, default: 5, min: 0 },
     status: { type: String, enum: Object.values(STORE_STATUS), default: STORE_STATUS.ACTIVE },
     approvalStatus: { type: String, enum: Object.values(STORE_APPROVAL_STATUS), default: STORE_APPROVAL_STATUS.PENDING },
     openingTime: { type: String, default: '09:00' },
@@ -69,13 +74,6 @@ const storeSchema = new Schema<IStore>(
 );
 
 storeSchema.index({ locationId: 1, status: 1 });
-// At most one store carrying a given type in a given zone — a multikey index
-// (storeTypeIds is an array), so this generates one index entry per
-// (deliveryZoneId, individual storeTypeId) pair, correctly catching overlap
-// between two stores' type arrays, not just an exact-array match. Enforced
-// here as the race-safe source of truth, and pre-checked in store.service.ts
-// for a clear error message before hitting this constraint.
-storeSchema.index({ deliveryZoneId: 1, storeTypeIds: 1 }, { unique: true });
 storeSchema.index({ name: 'text' });
 hidePasswordInJson(storeSchema);
 
