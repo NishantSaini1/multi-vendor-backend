@@ -12,6 +12,14 @@ export async function startTestDatabase(): Promise<void> {
   // (emulator/Gradle running alongside) and fails whole suites spuriously.
   mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1 }, instanceOpts: [{ launchTimeout: 60_000 }] });
   await mongoose.connect(mongoServer.getUri());
+  // mongoose.connect() resolves as soon as the connection is up — each
+  // model's autoIndex build then runs fire-and-forget in the background, so
+  // a query issued right after connecting can race ahead of it (most visible
+  // on the four $text-indexed collections: "text index required for $text
+  // query", MongoServerError code 27). Model.init() resolves once that one
+  // model's indexes are actually built; awaiting all of them here closes the
+  // race for every test rather than one at a time as it's hit.
+  await Promise.all(mongoose.modelNames().map((name) => mongoose.model(name).init()));
 }
 
 export async function stopTestDatabase(): Promise<void> {

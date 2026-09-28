@@ -127,6 +127,18 @@ describe('Search: cross-collection text search over vendors/products/stores', ()
     expect(res.body.data.instamartProducts.length).toBeGreaterThan(0);
   });
 
+  it('matches partial words (search-as-you-type)', async () => {
+    const res = await request(app).get('/api/v1/search').query({ q: 'piz', locationId });
+    expect(res.body.data.vendors.some((v: { restaurantName: string }) => v.restaurantName === 'Pizza Palace')).toBe(true);
+    expect(res.body.data.foodProducts.some((p: { name: string }) => p.name === 'Margherita Pizza')).toBe(true);
+    expect(res.body.data.instamartProducts.some((p: { name: string }) => p.name === 'Frozen Pizza Base')).toBe(true);
+  });
+
+  it('matches items by their category name', async () => {
+    const res = await request(app).get('/api/v1/search').query({ q: 'Search Food Category' });
+    expect(res.body.data.foodProducts.some((p: { name: string }) => p.name === 'Margherita Pizza')).toBe(true);
+  });
+
   it('rejects a query that is too short', async () => {
     const res = await request(app).get('/api/v1/search').query({ q: 'p' });
     expect(res.status).toBe(422);
