@@ -4,6 +4,8 @@ import { redisClient } from '../../src/config/redis';
 import { AdminUser } from '../../src/models/AdminUser';
 import { Location } from '../../src/models/Location';
 import { DeliveryZone } from '../../src/models/DeliveryZone';
+import { Store } from '../../src/models/Store';
+import { dropStoreZoneIndex } from '../../src/utils/dropStoreZoneIndex';
 import { hashPassword } from '../../src/utils/password';
 import { startTestDatabase, stopTestDatabase } from './testServer';
 import { createTestStoreType, createInstamartListing } from './helpers/foodFixtures';
@@ -84,6 +86,31 @@ describe('Stores + Instamart catalog + Inventory', () => {
     expect(res.status).toBe(201);
     expect(res.body.data.password).toBeUndefined();
     storeId = res.body.data._id;
+  });
+
+  it('allows a second store of the same type in the same zone, even if the retired unique index is still present', async () => {
+    // Older databases still carry the retired one-store-per-type-per-zone
+    // unique index; server startup drops it via dropStoreZoneIndex.
+    await Store.collection.createIndex({ deliveryZoneId: 1, storeTypeIds: 1 }, { unique: true, name: 'deliveryZoneId_1_storeTypeIds_1' });
+    await dropStoreZoneIndex();
+
+    const res = await request(app)
+      .post('/api/v1/stores')
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({
+        locationId,
+        storeTypeIds: [storeTypeId],
+        name: 'Second Store Same Type',
+        managerName: 'Manager 2',
+        phone: '9844400002',
+        password: 'StorePass123',
+        address: 'Addr 2',
+        latitude: 8,
+        longitude: 8,
+      });
+    expect(res.status).toBe(201);
+    const first = await Store.findById(storeId);
+    expect(res.body.data.deliveryZoneId).toBe(first!.deliveryZoneId.toString());
   });
 
   let categoryId: string;

@@ -4,9 +4,14 @@ import { connectDatabase, disconnectDatabase } from './config/database';
 import { redisClient } from './config/redis';
 import { logger } from './utils/logger';
 import { registerJobs } from './jobs';
+import { dropStoreZoneIndex } from './utils/dropStoreZoneIndex';
 
 async function bootstrap(): Promise<void> {
   await connectDatabase();
+  // Mongoose never drops indexes removed from a schema, so an older database
+  // can still carry the retired "one store per type per zone" unique index
+  // and reject a second same-type store in a zone. Idempotent and non-fatal.
+  await dropStoreZoneIndex().catch((err) => logger.warn({ err }, 'Could not drop stale store zone-type index'));
   registerJobs();
 
   const server = app.listen(env.PORT, () => {
