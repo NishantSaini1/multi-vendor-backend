@@ -86,6 +86,16 @@ export const DISCOUNT_TYPES = {
   FIXED: 'FIXED',
 } as const;
 
+// Who runs a Coupon/Offer. PLATFORM ones are created by an admin and can
+// target any mix of locations/vendors/stores/vendor types/store types; a
+// VENDOR or STORE one is created by that restaurant/store itself and is
+// always locked to its own vendorIds/storeIds (see promotionOwnership.ts).
+export const PROMOTION_OWNER_TYPES = {
+  PLATFORM: 'PLATFORM',
+  VENDOR: 'VENDOR',
+  STORE: 'STORE',
+} as const;
+
 export const COMMISSION_LEVELS = {
   GLOBAL: 'GLOBAL',
   LOCATION: 'LOCATION',

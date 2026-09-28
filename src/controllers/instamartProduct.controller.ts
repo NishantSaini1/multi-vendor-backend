@@ -5,6 +5,8 @@ import { parsePagination } from '../utils/pagination';
 import { ApiError } from '../utils/ApiError';
 import { InstamartGlobalProduct } from '../models/InstamartGlobalProduct';
 import * as instamartProductService from '../services/instamartProduct.service';
+import * as storeService from '../services/store.service';
+import { parseCoords } from '../utils/geoQuery';
 
 function requireUser(req: Request) {
   if (!req.user) throw ApiError.unauthorized();
@@ -20,6 +22,12 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   if (req.query.storeId && user.userType !== 'STORE') filter.storeId = req.query.storeId;
   if (req.query.categoryId) filter.categoryId = req.query.categoryId;
   if (req.query.status) filter.status = req.query.status;
+  // A customer browsing a location with their delivery coordinates only sees
+  // products from stores whose serviceRadius reaches them.
+  const coords = user.userType === 'CUSTOMER' ? parseCoords(req.query as Record<string, unknown>) : undefined;
+  if (coords && req.query.locationId && !req.query.storeId) {
+    filter.storeId = { $in: await storeService.storeIdsInRange(String(req.query.locationId), coords) };
+  }
   // name/brand now live on the joined Global Product, not this mapping — so
   // a search resolves matching global product ids first, then narrows the
   // mapping query to those.

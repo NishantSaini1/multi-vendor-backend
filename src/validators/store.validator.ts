@@ -16,6 +16,8 @@ export const createStoreSchema = z.object({
     address: z.string().min(3),
     latitude: z.number(),
     longitude: z.number(),
+    // km the store delivers to from its latitude/longitude (model default: 5)
+    serviceRadius: z.number().positive().max(100).optional(),
     openingTime: z.string().default('09:00'),
     closingTime: z.string().default('22:00'),
   }),

@@ -23,6 +23,8 @@ import {
 } from '../constants/deliveryStatus';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
+import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
+import { Payment } from '../models/Payment';
 import { env } from '../config/env';
 
 const DELIVERY_STATUS_TIMESTAMP_FIELD: Record<string, keyof IDelivery | undefined> = {
@@ -284,13 +286,71 @@ export async function getDeliveryTracking(id: string, user: JwtPayload) {
   };
 }
 
-export async function updateDeliveryStatus(id: string, newStatus: string, user: JwtPayload) {
+// PARTIALLY_REFUNDED still means the customer paid — some of it was just
+// refunded later (e.g. a missing item) — so it counts as settled here.
+const SETTLED_PAYMENT_STATUSES: string[] = [PAYMENT_STATUS.PAID, PAYMENT_STATUS.PARTIALLY_REFUNDED];
+
+function buildPaymentSummary(order: InstanceType<typeof Order>) {
+  const isPaid = SETTLED_PAYMENT_STATUSES.includes(order.paymentStatus);
+  return {
+    orderId: order.id,
+    orderNumber: order.orderNumber,
+    paymentMethod: order.paymentMethod,
+    paymentStatus: order.paymentStatus,
+    isPaid,
+    orderTotal: order.total,
+    // What the partner must physically collect at the door — only ever
+    // non-zero for an unpaid COD order.
+    amountToCollect: !isPaid && order.paymentMethod === PAYMENT_METHODS.COD ? order.total : 0,
+  };
+}
+
+// The delivery partner's "has this order been paid?" check before handing
+// the order over — see updateDeliveryStatus's DELIVERED guard below.
+export async function getDeliveryPaymentStatus(id: string, user: JwtPayload) {
+  const delivery = await findDeliveryOrThrow(id);
+  await assertDeliveryAccess(user, delivery);
+
+  const order = await Order.findById(delivery.orderId);
+  if (!order) throw ApiError.notFound('Order not found', 'ORDER_NOT_FOUND');
+  return buildPaymentSummary(order);
+}
+
+export interface UpdateDeliveryStatusOptions {
+  // COD only: the partner confirms they took the cash at the door, which
+  // records the order as PAID in the same transaction that marks it DELIVERED.
+  cashCollected?: boolean;
+}
+
+export async function updateDeliveryStatus(id: string, newStatus: string, user: JwtPayload, options: UpdateDeliveryStatusOptions = {}) {
   const delivery = await findDeliveryOrThrow(id);
   await assertDeliveryAccess(user, delivery);
 
   const allowed = DELIVERY_TRANSITIONS[delivery.status] ?? [];
   if (!allowed.includes(newStatus)) {
     throw ApiError.badRequest(`Cannot transition delivery from ${delivery.status} to ${newStatus}`, 'INVALID_DELIVERY_STATUS_TRANSITION');
+  }
+
+  // An order can only be handed over once it's paid for: online/wallet
+  // orders must already be PAID, and a COD order needs the partner to
+  // confirm the cash was collected (cashCollected: true).
+  let collectCodPayment = false;
+  if (newStatus === DELIVERY_STATUS.DELIVERED) {
+    const order = await Order.findById(delivery.orderId);
+    if (!order) throw ApiError.notFound('Order not found', 'ORDER_NOT_FOUND');
+    const summary = buildPaymentSummary(order);
+    if (!summary.isPaid) {
+      if (order.paymentMethod !== PAYMENT_METHODS.COD) {
+        throw ApiError.unprocessable('Payment for this order has not been completed yet', 'PAYMENT_NOT_COMPLETED');
+      }
+      if (!options.cashCollected) {
+        throw ApiError.unprocessable(
+          `Collect ${summary.amountToCollect} in cash and confirm it (cashCollected: true) before marking this order delivered`,
+          'COD_CASH_NOT_COLLECTED',
+        );
+      }
+      collectCodPayment = true;
+    }
   }
 
   let orderForNotify: InstanceType<typeof Order> | undefined;
@@ -325,6 +385,39 @@ export async function updateDeliveryStatus(id: string, newStatus: string, user: 
           { session },
         );
         mappedOrderStatusForNotify = mappedOrderStatus;
+
+        if (collectCodPayment) {
+          const [payment] = await Payment.create(
+            [
+              {
+                orderId: order.id,
+                customerId: order.customerId,
+                amount: order.total,
+                method: PAYMENT_METHODS.COD,
+                status: PAYMENT_STATUS.PAID,
+                paidAt: new Date(),
+              },
+            ],
+            { session },
+          );
+          order.paymentId = payment._id;
+          order.paymentStatus = PAYMENT_STATUS.PAID;
+          await order.save({ session });
+
+          // The COD counterpart of the ORDER_PAYMENT entry RAZORPAY records in
+          // payment.service.ts's markPaymentPaid and WALLET in createOrder.
+          await ledgerService.recordTransaction(
+            {
+              orderId: order.id,
+              vendorId: order.vendorId?.toString(),
+              storeId: order.storeId?.toString(),
+              type: TRANSACTION_TYPE.ORDER_PAYMENT,
+              amount: order.total,
+              direction: TRANSACTION_DIRECTION.CREDIT,
+            },
+            session,
+          );
+        }
 
         if (newStatus === DELIVERY_STATUS.DELIVERED && partner) {
           partner.availability = DELIVERY_PARTNER_AVAILABILITY.ONLINE;

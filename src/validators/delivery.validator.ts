@@ -19,6 +19,8 @@ export const updateDeliveryStatusSchema = z.object({
       DELIVERY_STATUS.CANCELLED,
       DELIVERY_STATUS.FAILED,
     ]),
+    // COD only, with status DELIVERED: confirms the cash was collected.
+    cashCollected: z.boolean().optional(),
   }),
 });
 

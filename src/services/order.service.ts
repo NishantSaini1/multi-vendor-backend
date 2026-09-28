@@ -311,6 +311,15 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
     if (store.locationId.toString() !== location.id) {
       throw ApiError.badRequest('Store does not belong to the delivery address location', 'STORE_LOCATION_MISMATCH');
     }
+    // Same rule as a restaurant: the store has to reach this address.
+    const storeDistanceKm = haversineDistanceKm(address.latitude, address.longitude, store.latitude, store.longitude);
+    const storeRadiusKm = store.serviceRadius ?? 5;
+    if (storeDistanceKm > storeRadiusKm) {
+      throw ApiError.unprocessable(
+        `This store delivers within ${storeRadiusKm} km — your address is ${Math.round(storeDistanceKm * 10) / 10} km away`,
+        'OUT_OF_SELLER_RANGE',
+      );
+    }
     storeId = store.id;
   }
 

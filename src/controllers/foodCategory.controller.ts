@@ -18,6 +18,17 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   // in the service; these are only extra, admin-only narrowing filters.
   const filter: Record<string, unknown> = {};
   if (req.query.status && user.userType === 'ADMIN') filter.status = req.query.status;
+  // A customer browsing a location only sees categories that some restaurant
+  // there actually sells (an admin/vendor list stays unfiltered).
+  if (user.userType === 'CUSTOMER' && typeof req.query.locationId === 'string' && req.query.locationId) {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const coords =
+      req.query.lat !== undefined && req.query.lng !== undefined && Number.isFinite(lat) && Number.isFinite(lng)
+        ? { lat, lng }
+        : undefined;
+    filter._id = { $in: await foodCategoryService.categoryIdsInLocation(req.query.locationId, coords) };
+  }
 
   const { items, total } = await foodCategoryService.listFoodCategories(
     filter,

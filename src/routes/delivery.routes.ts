@@ -14,6 +14,7 @@ const operatorActor = authenticate('ADMIN', 'DELIVERY_PARTNER');
 router.get('/', operatorActor, requirePermission(PERMISSIONS.DELIVERY_VIEW), validate(listDeliveriesQuerySchema), controller.list);
 router.get('/:id', anyDeliveryActor, requirePermission(PERMISSIONS.DELIVERY_VIEW), validate(deliveryIdParamSchema), controller.getById);
 router.get('/:id/tracking', anyDeliveryActor, requirePermission(PERMISSIONS.DELIVERY_VIEW), validate(deliveryIdParamSchema), controller.tracking);
+router.get('/:id/payment', anyDeliveryActor, requirePermission(PERMISSIONS.DELIVERY_VIEW), validate(deliveryIdParamSchema), controller.paymentStatus);
 router.patch(
   '/:id/status',
   operatorActor,

@@ -129,15 +129,18 @@ export async function checkServiceability(
     return { serviceable: true, ...base, sellerDistanceKm, sellerServiceRadiusKm };
   }
   if (businessType === BUSINESS_TYPES.INSTAMART && seller.storeId) {
-    const store = await Store.findById(seller.storeId).select('status deliveryZoneId latitude longitude');
+    // Same rule as a restaurant: same location, and the address within the
+    // store's own serviceRadius (was: the store's zone had to be this zone).
+    const store = await Store.findById(seller.storeId).select('status locationId latitude longitude serviceRadius');
     if (!store || store.status !== STORE_STATUS.ACTIVE) {
       return { serviceable: false, ...base, reason: 'SELLER_NOT_ACTIVE' };
     }
     const sellerDistanceKm = Math.round(haversineDistanceKm(latitude, longitude, store.latitude, store.longitude) * 10) / 10;
-    if (store.deliveryZoneId?.toString() !== zone.id) {
-      return { serviceable: false, ...base, reason: 'OUT_OF_SELLER_RANGE', sellerDistanceKm };
+    const sellerServiceRadiusKm = store.serviceRadius ?? 5;
+    if (store.locationId?.toString() !== location.id || sellerDistanceKm > sellerServiceRadiusKm) {
+      return { serviceable: false, ...base, reason: 'OUT_OF_SELLER_RANGE', sellerDistanceKm, sellerServiceRadiusKm };
     }
-    return { serviceable: true, ...base, sellerDistanceKm };
+    return { serviceable: true, ...base, sellerDistanceKm, sellerServiceRadiusKm };
   }
 
   return { serviceable: true, ...base };

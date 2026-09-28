@@ -37,7 +37,14 @@ export const tracking = catchAsync(async (req: Request, res: Response) => {
   sendSuccess(res, data);
 });
 
+export const paymentStatus = catchAsync(async (req: Request, res: Response) => {
+  const data = await deliveryService.getDeliveryPaymentStatus(req.params.id, requireUser(req));
+  sendSuccess(res, data);
+});
+
 export const updateStatus = catchAsync(async (req: Request, res: Response) => {
-  const delivery = await deliveryService.updateDeliveryStatus(req.params.id, req.body.status, requireUser(req));
+  const delivery = await deliveryService.updateDeliveryStatus(req.params.id, req.body.status, requireUser(req), {
+    cashCollected: req.body.cashCollected,
+  });
   sendSuccess(res, delivery, 'Delivery status updated');
 });

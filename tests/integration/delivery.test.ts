@@ -241,14 +241,36 @@ describe('Delivery assignment engine + status machine', () => {
       .patch(`/api/v1/deliveries/${deliveryId}/status`)
       .set('Authorization', `Bearer ${assignedPartnerToken}`)
       .send({ status: 'OUT_FOR_DELIVERY' });
-    const res = await request(app)
+
+    // Unpaid COD: the partner sees what to collect, and can't mark the order
+    // delivered until they confirm the cash was collected.
+    const paymentRes = await request(app).get(`/api/v1/deliveries/${deliveryId}/payment`).set('Authorization', `Bearer ${assignedPartnerToken}`);
+    expect(paymentRes.status).toBe(200);
+    expect(paymentRes.body.data.paymentMethod).toBe('COD');
+    expect(paymentRes.body.data.isPaid).toBe(false);
+    expect(paymentRes.body.data.amountToCollect).toBe(paymentRes.body.data.orderTotal);
+    expect(paymentRes.body.data.amountToCollect).toBeGreaterThan(0);
+
+    const blockedRes = await request(app)
       .patch(`/api/v1/deliveries/${deliveryId}/status`)
       .set('Authorization', `Bearer ${assignedPartnerToken}`)
       .send({ status: 'DELIVERED' });
+    expect(blockedRes.status).toBe(422);
+    expect(blockedRes.body.error.code).toBe('COD_CASH_NOT_COLLECTED');
+
+    const res = await request(app)
+      .patch(`/api/v1/deliveries/${deliveryId}/status`)
+      .set('Authorization', `Bearer ${assignedPartnerToken}`)
+      .send({ status: 'DELIVERED', cashCollected: true });
     expect(res.status).toBe(200);
 
     const orderRes = await request(app).get(`/api/v1/orders/${assignedOrderId}`).set('Authorization', `Bearer ${superAdminToken}`);
     expect(orderRes.body.data.status).toBe('DELIVERED');
+    expect(orderRes.body.data.paymentStatus).toBe('PAID');
+
+    const paidRes = await request(app).get(`/api/v1/deliveries/${deliveryId}/payment`).set('Authorization', `Bearer ${assignedPartnerToken}`);
+    expect(paidRes.body.data.isPaid).toBe(true);
+    expect(paidRes.body.data.amountToCollect).toBe(0);
 
     const partnerRes = await request(app).get(`/api/v1/delivery-partners/${assignedPartnerId}`).set('Authorization', `Bearer ${superAdminToken}`);
     expect(partnerRes.body.data.availability).toBe('ONLINE');

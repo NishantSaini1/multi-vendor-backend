@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as controller from '../controllers/coupon.controller';
 import { validate } from '../middleware/validate.middleware';
-import { authenticate, authenticateAdmin } from '../middleware/auth.middleware';
+import { authenticate } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../constants/permissions';
 import {
@@ -32,10 +32,12 @@ router.get(
 // math still lives in one place; it never consumes a use.
 router.post('/preview', authenticate('CUSTOMER'), validate(previewCouponSchema), controller.preview);
 
-// Admin-only management surface. Actually applying a coupon (incrementing
-// usedCount) happens as part of POST /orders itself — see
-// order.service.createOrder.
-router.use(authenticateAdmin);
+// Management surface: ADMIN (gated by COUPON_* permissions) manages every
+// coupon; a VENDOR/STORE manages only its own, locked to itself — see
+// coupon.service / utils/promotionOwnership.ts (requirePermission is a no-op
+// for non-admin actors). Actually applying a coupon (incrementing usedCount)
+// happens as part of POST /orders itself — see order.service.createOrder.
+router.use(authenticate('ADMIN', 'VENDOR', 'STORE'));
 
 router.get('/', requirePermission(PERMISSIONS.COUPON_VIEW), validate(listCouponsQuerySchema), controller.list);
 router.post('/', requirePermission(PERMISSIONS.COUPON_MANAGE), validate(createCouponSchema), controller.create);

@@ -72,7 +72,7 @@ describe('Reviews: eligibility, target validation, moderation, and rating aggreg
     const deliveryId = assignRes.body.data._id;
 
     for (const status of ['ACCEPTED', 'ARRIVED_AT_PICKUP', 'PICKED_UP', 'OUT_FOR_DELIVERY', 'DELIVERED']) {
-      await request(app).patch(`/api/v1/deliveries/${deliveryId}/status`).set('Authorization', `Bearer ${partnerToken}`).send({ status });
+      await request(app).patch(`/api/v1/deliveries/${deliveryId}/status`).set('Authorization', `Bearer ${partnerToken}`).send({ status, cashCollected: true });
     }
 
     return { orderId, partnerId };

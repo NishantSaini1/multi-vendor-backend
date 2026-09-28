@@ -3,13 +3,81 @@ import { Coupon, ICoupon } from '../models/Coupon';
 import { Order } from '../models/Order';
 import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
-import { GENERIC_STATUS, DISCOUNT_TYPES } from '../constants/enums';
+import { GENERIC_STATUS, DISCOUNT_TYPES, PROMOTION_OWNER_TYPES } from '../constants/enums';
+import { BUSINESS_TYPES } from '../constants/orderStatus';
+import { JwtPayload } from '../utils/jwt';
+import {
+  PromotionTarget,
+  arrayScopeOr,
+  assertCanManagePromotion,
+  isPromotionOwnerActor,
+  lockCreateToOwner,
+  lockUpdateToOwner,
+  ownedByFilter,
+  resolvePromotionTarget,
+} from '../utils/promotionOwnership';
 
-export function couponListFilter(): Record<string, unknown> {
+export interface CouponListQuery {
+  status?: string;
+  ownerType?: string;
+  vendorId?: string;
+  storeId?: string;
+  // Vendor/store only: 'mine' (default) = coupons they created;
+  // 'platform' = admin-run coupons that currently apply to their orders
+  // (read-only for them).
+  scope?: 'mine' | 'platform';
+}
+
+export async function couponListFilter(user: JwtPayload, query: CouponListQuery): Promise<Record<string, unknown>> {
+  const filter: Record<string, unknown> = {};
+  if (query.status) filter.status = query.status;
+
+  if (isPromotionOwnerActor(user)) {
+    if (query.scope === 'platform') {
+      const ctx = user.userType === 'VENDOR' ? { vendorId: user.userId } : { storeId: user.userId };
+      const target = await resolvePromotionTarget(ctx);
+      Object.assign(filter, {
+        ownerType: PROMOTION_OWNER_TYPES.PLATFORM,
+        $and: platformScopeClauses({
+          ...ctx,
+          locationId: target.locationId,
+          businessType: user.userType === 'VENDOR' ? BUSINESS_TYPES.FOOD : BUSINESS_TYPES.INSTAMART,
+          target,
+        }),
+      });
+      return filter;
+    }
+    return { ...filter, ...ownedByFilter(user) };
+  }
+
   // Coupons aren't location-owned the way Vendor/Store are — MARKETING_ADMIN
   // (the only role with COUPON_VIEW/MANAGE besides SUPER_ADMIN) operates
   // platform-wide, so there's no location scoping to apply here.
-  return {};
+  if (query.ownerType) filter.ownerType = query.ownerType;
+  if (query.vendorId) filter.$or = [{ vendorIds: query.vendorId }, { ownerType: PROMOTION_OWNER_TYPES.VENDOR, ownerId: query.vendorId }];
+  if (query.storeId) filter.$or = [{ storeIds: query.storeId }, { ownerType: PROMOTION_OWNER_TYPES.STORE, ownerId: query.storeId }];
+  return filter;
+}
+
+// The location/businessType/vendor/store/vendor-type/store-type clauses a
+// coupon must satisfy to apply to an order at this vendor/store — shared by
+// the customer "browse" list and a vendor's/store's "platform coupons that
+// apply to me" view, and mirroring evaluateCoupon's checks.
+function platformScopeClauses(ctx: {
+  locationId?: string;
+  businessType: string;
+  vendorId?: string;
+  storeId?: string;
+  target: PromotionTarget;
+}): Record<string, unknown>[] {
+  return [
+    { $or: [{ businessTypes: { $size: 0 } }, { businessTypes: ctx.businessType }] },
+    { $or: arrayScopeOr('locationIds', ctx.locationId ? [ctx.locationId] : []) },
+    { $or: arrayScopeOr('vendorIds', ctx.vendorId ? [ctx.vendorId] : []) },
+    { $or: arrayScopeOr('storeIds', ctx.storeId ? [ctx.storeId] : []) },
+    { $or: arrayScopeOr('vendorTypeIds', ctx.target.vendorTypeIds) },
+    { $or: arrayScopeOr('storeTypeIds', ctx.target.storeTypeIds) },
+  ];
 }
 
 export async function listCoupons(filter: Record<string, unknown>, pagination: PaginationParams) {
@@ -34,32 +102,29 @@ export async function listActiveCouponsForCustomer(ctx: {
   storeId?: string;
 }) {
   const now = new Date();
-  const scopeOr = (field: 'locationIds' | 'vendorIds' | 'storeIds', value: string | undefined) => [
-    { [field]: { $size: 0 } },
-    ...(value ? [{ [field]: value }] : []),
-  ];
+  const target = await resolvePromotionTarget(ctx);
 
   const coupons = await Coupon.find({
     status: GENERIC_STATUS.ACTIVE,
     startDate: { $lte: now },
     endDate: { $gte: now },
-    $and: [
-      { $or: [{ businessTypes: { $size: 0 } }, { businessTypes: ctx.businessType }] },
-      { $or: scopeOr('locationIds', ctx.locationId) },
-      { $or: scopeOr('vendorIds', ctx.vendorId) },
-      { $or: scopeOr('storeIds', ctx.storeId) },
-    ],
-    $expr: { $or: [{ $eq: ['$usageLimit', null] }, { $lt: ['$usedCount', '$usageLimit'] }] },
+    $and: platformScopeClauses({ ...ctx, target }),
+    // $ifNull: an unset usageLimit is a *missing* field, which $eq never
+    // treats as equal to null inside $expr — without it, every coupon with
+    // no usage limit silently dropped out of this list.
+    $expr: { $or: [{ $eq: [{ $ifNull: ['$usageLimit', null] }, null] }, { $lt: ['$usedCount', '$usageLimit'] }] },
   }).sort({ discountValue: -1 });
 
   return coupons;
 }
 
-export async function createCoupon(data: Record<string, unknown>) {
+// ADMIN creates PLATFORM coupons with any scoping; a VENDOR/STORE creates
+// one locked to itself (see promotionOwnership.ts).
+export async function createCoupon(data: Record<string, unknown>, user: JwtPayload) {
   const code = String(data.code).toUpperCase();
   const existing = await Coupon.findOne({ code });
   if (existing) throw ApiError.conflict('A coupon with this code already exists', 'COUPON_CODE_EXISTS');
-  return Coupon.create({ ...data, code });
+  return Coupon.create({ ...lockCreateToOwner(user, data, 'COUPON'), code });
 }
 
 async function findCouponOrThrow(id: string) {
@@ -68,24 +133,35 @@ async function findCouponOrThrow(id: string) {
   return coupon;
 }
 
-export async function getCouponById(id: string) {
-  return findCouponOrThrow(id);
+// A vendor/store may also read a PLATFORM coupon that applies to it (the
+// scope=platform list links here); everything else is owner-only.
+export async function getCouponById(id: string, user: JwtPayload) {
+  const coupon = await findCouponOrThrow(id);
+  if (isPromotionOwnerActor(user) && coupon.ownerType !== PROMOTION_OWNER_TYPES.PLATFORM) {
+    assertCanManagePromotion(user, coupon);
+  }
+  return coupon;
 }
 
-export async function updateCoupon(id: string, data: Record<string, unknown>) {
+export async function updateCoupon(id: string, data: Record<string, unknown>, user: JwtPayload) {
   const coupon = await findCouponOrThrow(id);
-  Object.assign(coupon, data);
+  assertCanManagePromotion(user, coupon);
+  Object.assign(coupon, lockUpdateToOwner(user, data));
+  if (coupon.startDate >= coupon.endDate) {
+    throw ApiError.badRequest('startDate must be before endDate', 'INVALID_DATE_RANGE');
+  }
   await coupon.save();
   return coupon;
 }
 
-export async function deleteCoupon(id: string) {
+export async function deleteCoupon(id: string, user: JwtPayload) {
   const coupon = await findCouponOrThrow(id);
+  assertCanManagePromotion(user, coupon);
   await coupon.deleteOne();
 }
 
-export async function updateCouponStatus(id: string, status: string) {
-  return updateCoupon(id, { status });
+export async function updateCouponStatus(id: string, status: string, user: JwtPayload) {
+  return updateCoupon(id, { status }, user);
 }
 
 interface CouponApplicationContext {
@@ -166,6 +242,15 @@ async function evaluateCoupon(
   }
   if (coupon.storeIds.length > 0 && (!ctx.storeId || !coupon.storeIds.some((id) => id.toString() === ctx.storeId))) {
     throw ApiError.unprocessable('This coupon is not valid for this store', 'COUPON_NOT_APPLICABLE');
+  }
+  if (coupon.vendorTypeIds.length > 0 || coupon.storeTypeIds.length > 0) {
+    const target = await resolvePromotionTarget(ctx);
+    if (coupon.vendorTypeIds.length > 0 && !coupon.vendorTypeIds.some((id) => target.vendorTypeIds.includes(id.toString()))) {
+      throw ApiError.unprocessable('This coupon is not valid for this restaurant', 'COUPON_NOT_APPLICABLE');
+    }
+    if (coupon.storeTypeIds.length > 0 && !coupon.storeTypeIds.some((id) => target.storeTypeIds.includes(id.toString()))) {
+      throw ApiError.unprocessable('This coupon is not valid for this store', 'COUPON_NOT_APPLICABLE');
+    }
   }
   if (coupon.foodItemIds.length > 0) {
     const orderedIds = new Set(ctx.foodItemIds ?? []);

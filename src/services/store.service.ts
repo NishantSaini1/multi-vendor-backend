@@ -104,12 +104,10 @@ export async function updateStore(id: string, data: Record<string, unknown>, use
   delete data.locationId;
   delete data.deliveryZoneId;
 
-  let resolvedZoneId = store.deliveryZoneId.toString();
   if (data.latitude !== undefined || data.longitude !== undefined) {
     const latitude = (data.latitude as number | undefined) ?? store.latitude;
     const longitude = (data.longitude as number | undefined) ?? store.longitude;
     const zone = await resolveZoneForStore(store.locationId.toString(), latitude, longitude);
-    resolvedZoneId = zone.id;
     data.deliveryZoneId = zone.id;
   }
 

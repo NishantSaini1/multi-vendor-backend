@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DISCOUNT_TYPES, GENERIC_STATUS } from '../constants/enums';
+import { DISCOUNT_TYPES, GENERIC_STATUS, PROMOTION_OWNER_TYPES } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 
 const objectId = z.string().length(24);
@@ -20,6 +20,8 @@ export const createCouponSchema = z.object({
       storeIds: z.array(objectId).default([]),
       categoryIds: z.array(objectId).default([]),
       foodItemIds: z.array(objectId).default([]),
+      vendorTypeIds: z.array(objectId).default([]),
+      storeTypeIds: z.array(objectId).default([]),
       firstOrderOnly: z.boolean().default(false),
       startDate: z.coerce.date(),
       endDate: z.coerce.date(),
@@ -46,6 +48,8 @@ export const updateCouponSchema = z.object({
     storeIds: z.array(objectId).optional(),
     categoryIds: z.array(objectId).optional(),
     foodItemIds: z.array(objectId).optional(),
+    vendorTypeIds: z.array(objectId).optional(),
+    storeTypeIds: z.array(objectId).optional(),
     firstOrderOnly: z.boolean().optional(),
     startDate: z.coerce.date().optional(),
     endDate: z.coerce.date().optional(),
@@ -63,6 +67,11 @@ export const listCouponsQuerySchema = z.object({
     limit: z.string().optional(),
     sort: z.string().optional(),
     status: z.enum(Object.values(GENERIC_STATUS) as [string, ...string[]]).optional(),
+    ownerType: z.enum(Object.values(PROMOTION_OWNER_TYPES) as [string, ...string[]]).optional(),
+    vendorId: objectId.optional(),
+    storeId: objectId.optional(),
+    // vendor/store only: 'mine' (default) or 'platform' (admin coupons that apply to me)
+    scope: z.enum(['mine', 'platform']).optional(),
   }),
 });
 

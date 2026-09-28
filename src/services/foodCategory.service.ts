@@ -6,7 +6,16 @@ import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { slugify } from '../utils/slug';
-import { GENERIC_STATUS, FOOD_ITEM_SUBMISSION_STATUS } from '../constants/enums';
+import { Vendor } from '../models/Vendor';
+import { VendorFoodItem } from '../models/VendorFoodItem';
+import { haversineDistanceKm } from '../utils/geo';
+import {
+  GENERIC_STATUS,
+  FOOD_ITEM_SUBMISSION_STATUS,
+  VENDOR_STATUS,
+  APPROVAL_STATUS,
+  GLOBAL_FOOD_ITEM_STATUS,
+} from '../constants/enums';
 
 // Two kinds of category (see FoodCategory.ts): GLOBAL (vendorId: null,
 // admin-managed, read-only for vendors) and VENDOR-OWNED (vendorId set,
@@ -43,6 +52,32 @@ export function foodCategoryListFilter(user: JwtPayload, vendorIdParam?: string)
     return { status: GENERIC_STATUS.ACTIVE, $or: visible };
   }
   return vendorIdParam ? { vendorId: vendorIdParam } : {};
+}
+
+// Ids of the categories that are actually on sale in a location: the category
+// of every ACTIVE global dish that an ACTIVE, APPROVED restaurant in that
+// location currently lists. Drives the customer home's "What's on your mind"
+// rail, so it never shows a category no nearby restaurant serves.
+// With the customer's delivery coordinates, only restaurants whose own
+// serviceRadius reaches them count (same rule as the vendor list / checkout).
+export async function categoryIdsInLocation(locationId: string, coords?: { lat: number; lng: number }) {
+  const vendorFilter = { locationId, status: VENDOR_STATUS.ACTIVE, approvalStatus: APPROVAL_STATUS.APPROVED };
+  let vendorIds: unknown[];
+  if (coords) {
+    const vendors = await Vendor.find(vendorFilter).select('latitude longitude serviceRadius').lean();
+    vendorIds = vendors
+      .filter((v) => haversineDistanceKm(coords.lat, coords.lng, v.latitude, v.longitude) <= (v.serviceRadius ?? 5))
+      .map((v) => v._id);
+  } else {
+    vendorIds = await Vendor.distinct('_id', vendorFilter);
+  }
+  if (!vendorIds.length) return [];
+  const globalItemIds = await VendorFoodItem.distinct('globalFoodItemId', {
+    vendorId: { $in: vendorIds },
+    status: GENERIC_STATUS.ACTIVE,
+  });
+  if (!globalItemIds.length) return [];
+  return FoodProduct.distinct('categoryId', { _id: { $in: globalItemIds }, status: GLOBAL_FOOD_ITEM_STATUS.ACTIVE });
 }
 
 export async function listFoodCategories(

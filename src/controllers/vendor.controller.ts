@@ -60,7 +60,22 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   }
   if (req.query.search) filter.restaurantName = { $regex: String(req.query.search), $options: 'i' };
 
-  const { items, total } = await vendorService.listVendors(filter, pagination);
+  // A customer passing their delivery coordinates gets only the restaurants
+  // that deliver there (each vendor's own serviceRadius), nearest first.
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const byDistance =
+    isCustomer &&
+    req.query.lat !== undefined &&
+    req.query.lng !== undefined &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180;
+
+  const { items, total } = byDistance
+    ? await vendorService.listVendorsByDistance(filter, pagination, lat, lng)
+    : await vendorService.listVendors(filter, pagination);
   const data = isCustomer ? items.map(toCustomerVendorView) : items;
   sendSuccess(res, data, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });

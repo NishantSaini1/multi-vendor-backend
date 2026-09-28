@@ -7,6 +7,7 @@ import { locationScopeFilter } from '../middleware/rbac.middleware';
 import { STORE_STATUS } from '../constants/enums';
 import * as storeService from '../services/store.service';
 import { IStore } from '../models/Store';
+import { parseCoords } from '../utils/geoQuery';
 
 function requireUser(req: Request) {
   if (!req.user) throw ApiError.unauthorized();
@@ -28,6 +29,7 @@ function toCustomerStoreView(store: IStore) {
     address: store.address,
     latitude: store.latitude,
     longitude: store.longitude,
+    serviceRadius: store.serviceRadius,
     status: store.status,
     openingTime: store.openingTime,
     closingTime: store.closingTime,
@@ -60,7 +62,12 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   }
   if (req.query.search) filter.name = { $regex: String(req.query.search), $options: 'i' };
 
-  const { items, total } = await storeService.listStores(filter, pagination);
+  // A customer passing their delivery coordinates gets only the stores that
+  // deliver there (each store's own serviceRadius), nearest first.
+  const coords = isCustomer ? parseCoords(req.query as Record<string, unknown>) : undefined;
+  const { items, total } = coords
+    ? await storeService.listStoresInRange(filter, pagination, coords.lat, coords.lng)
+    : await storeService.listStores(filter, pagination);
   const data = isCustomer ? items.map(toCustomerStoreView) : items;
   sendSuccess(res, data, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });

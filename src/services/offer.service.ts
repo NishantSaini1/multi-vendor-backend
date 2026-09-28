@@ -1,7 +1,35 @@
 import { Offer } from '../models/Offer';
 import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
-import { GENERIC_STATUS } from '../constants/enums';
+import { JwtPayload } from '../utils/jwt';
+import { GENERIC_STATUS, PROMOTION_OWNER_TYPES } from '../constants/enums';
+import {
+  arrayScopeOr,
+  assertCanManagePromotion,
+  isPromotionOwnerActor,
+  lockCreateToOwner,
+  lockUpdateToOwner,
+  ownedByFilter,
+  resolvePromotionTarget,
+} from '../utils/promotionOwnership';
+
+export interface OfferListQuery {
+  status?: string;
+  ownerType?: string;
+  vendorId?: string;
+  storeId?: string;
+}
+
+export function offerListFilter(user: JwtPayload, query: OfferListQuery): Record<string, unknown> {
+  const filter: Record<string, unknown> = {};
+  if (query.status) filter.status = query.status;
+  if (isPromotionOwnerActor(user)) return { ...filter, ...ownedByFilter(user) };
+
+  if (query.ownerType) filter.ownerType = query.ownerType;
+  if (query.vendorId) filter.$or = [{ vendorIds: query.vendorId }, { ownerType: PROMOTION_OWNER_TYPES.VENDOR, ownerId: query.vendorId }];
+  if (query.storeId) filter.$or = [{ storeIds: query.storeId }, { ownerType: PROMOTION_OWNER_TYPES.STORE, ownerId: query.storeId }];
+  return filter;
+}
 
 export async function listOffers(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -11,8 +39,10 @@ export async function listOffers(filter: Record<string, unknown>, pagination: Pa
   return { items, total };
 }
 
-export async function createOffer(data: Record<string, unknown>) {
-  return Offer.create(data);
+// ADMIN creates PLATFORM offers with any scoping; a VENDOR/STORE creates
+// one locked to itself (see promotionOwnership.ts).
+export async function createOffer(data: Record<string, unknown>, user: JwtPayload) {
+  return Offer.create(lockCreateToOwner(user, data, 'OFFER'));
 }
 
 async function findOfferOrThrow(id: string) {
@@ -21,24 +51,33 @@ async function findOfferOrThrow(id: string) {
   return offer;
 }
 
-export async function getOfferById(id: string) {
-  return findOfferOrThrow(id);
+export async function getOfferById(id: string, user: JwtPayload) {
+  const offer = await findOfferOrThrow(id);
+  if (isPromotionOwnerActor(user) && offer.ownerType !== PROMOTION_OWNER_TYPES.PLATFORM) {
+    assertCanManagePromotion(user, offer);
+  }
+  return offer;
 }
 
-export async function updateOffer(id: string, data: Record<string, unknown>) {
+export async function updateOffer(id: string, data: Record<string, unknown>, user: JwtPayload) {
   const offer = await findOfferOrThrow(id);
-  Object.assign(offer, data);
+  assertCanManagePromotion(user, offer);
+  Object.assign(offer, lockUpdateToOwner(user, data));
+  if (offer.startDate >= offer.endDate) {
+    throw ApiError.badRequest('startDate must be before endDate', 'INVALID_DATE_RANGE');
+  }
   await offer.save();
   return offer;
 }
 
-export async function deleteOffer(id: string) {
+export async function deleteOffer(id: string, user: JwtPayload) {
   const offer = await findOfferOrThrow(id);
+  assertCanManagePromotion(user, offer);
   await offer.deleteOne();
 }
 
-export async function updateOfferStatus(id: string, status: string) {
-  return updateOffer(id, { status });
+export async function updateOfferStatus(id: string, status: string, user: JwtPayload) {
+  return updateOffer(id, { status }, user);
 }
 
 // Public "what's currently running" query — display-only. Offers are
@@ -62,6 +101,13 @@ export async function listActiveOffers(filter: { locationId?: string; businessTy
   if (filter.businessType) clauses.push({ businessType: { $in: [null, filter.businessType] } });
   if (filter.vendorId) clauses.push({ $or: [{ vendorIds: { $size: 0 } }, { vendorIds: filter.vendorId }] });
   if (filter.storeId) clauses.push({ $or: [{ storeIds: { $size: 0 } }, { storeIds: filter.storeId }] });
+  // Viewing one restaurant/store: an offer scoped to vendor/store TYPES
+  // shows only if this vendor/store is one of those types.
+  if (filter.vendorId || filter.storeId) {
+    const target = await resolvePromotionTarget(filter);
+    clauses.push({ $or: arrayScopeOr('vendorTypeIds', target.vendorTypeIds) });
+    clauses.push({ $or: arrayScopeOr('storeTypeIds', target.storeTypeIds) });
+  }
 
   return Offer.find({ $and: clauses }).sort({ createdAt: -1 });
 }

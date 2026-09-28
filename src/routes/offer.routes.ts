@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as controller from '../controllers/offer.controller';
 import { validate } from '../middleware/validate.middleware';
-import { authenticateAdmin } from '../middleware/auth.middleware';
+import { authenticate } from '../middleware/auth.middleware';
 import { requirePermission } from '../middleware/rbac.middleware';
 import { PERMISSIONS } from '../constants/permissions';
 import {
@@ -19,7 +19,9 @@ const router = Router();
 // content, no auth required. Must be declared before the admin-only gate.
 router.get('/active', validate(activeOffersQuerySchema), controller.active);
 
-router.use(authenticateAdmin);
+// ADMIN (gated by OFFER_* permissions) manages every offer; a VENDOR/STORE
+// manages only its own — see offer.service / utils/promotionOwnership.ts.
+router.use(authenticate('ADMIN', 'VENDOR', 'STORE'));
 
 router.get('/', requirePermission(PERMISSIONS.OFFER_VIEW), validate(listOffersQuerySchema), controller.list);
 router.post('/', requirePermission(PERMISSIONS.OFFER_MANAGE), validate(createOfferSchema), controller.create);

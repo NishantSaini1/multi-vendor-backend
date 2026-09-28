@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DISCOUNT_TYPES, GENERIC_STATUS } from '../constants/enums';
+import { DISCOUNT_TYPES, GENERIC_STATUS, PROMOTION_OWNER_TYPES } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 
 const objectId = z.string().length(24);
@@ -15,6 +15,8 @@ export const createOfferSchema = z.object({
       businessType: z.enum([BUSINESS_TYPES.FOOD, BUSINESS_TYPES.INSTAMART]).optional(),
       vendorIds: z.array(objectId).default([]),
       storeIds: z.array(objectId).default([]),
+      vendorTypeIds: z.array(objectId).default([]),
+      storeTypeIds: z.array(objectId).default([]),
       startDate: z.coerce.date(),
       endDate: z.coerce.date(),
     })
@@ -36,6 +38,8 @@ export const updateOfferSchema = z.object({
     businessType: z.enum([BUSINESS_TYPES.FOOD, BUSINESS_TYPES.INSTAMART]).nullable().optional(),
     vendorIds: z.array(objectId).optional(),
     storeIds: z.array(objectId).optional(),
+    vendorTypeIds: z.array(objectId).optional(),
+    storeTypeIds: z.array(objectId).optional(),
     startDate: z.coerce.date().optional(),
     endDate: z.coerce.date().optional(),
   }),
@@ -52,6 +56,9 @@ export const listOffersQuerySchema = z.object({
     limit: z.string().optional(),
     sort: z.string().optional(),
     status: z.enum(Object.values(GENERIC_STATUS) as [string, ...string[]]).optional(),
+    ownerType: z.enum(Object.values(PROMOTION_OWNER_TYPES) as [string, ...string[]]).optional(),
+    vendorId: objectId.optional(),
+    storeId: objectId.optional(),
   }),
 });
 

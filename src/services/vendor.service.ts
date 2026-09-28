@@ -12,6 +12,7 @@ import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess } from '../middleware/rbac.middleware';
 import { VENDOR_STATUS, APPROVAL_STATUS, COMMISSION_LEVELS, GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
+import { findSellersInRange } from '../utils/geoQuery';
 
 export async function listVendors(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -19,6 +20,13 @@ export async function listVendors(filter: Record<string, unknown>, pagination: P
     Vendor.countDocuments(filter),
   ]);
   return { items, total };
+}
+
+// Customer browse by delivery address: only restaurants whose own
+// serviceRadius reaches (lat, lng) — the same rule order creation enforces
+// (OUT_OF_SELLER_RANGE) — nearest first.
+export function listVendorsByDistance(filter: Record<string, unknown>, pagination: PaginationParams, lat: number, lng: number) {
+  return findSellersInRange(Vendor, filter, pagination, lat, lng);
 }
 
 // Accepts an optional commissionType/commissionValue pair alongside the usual

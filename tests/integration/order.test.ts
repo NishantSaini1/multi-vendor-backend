@@ -297,18 +297,20 @@ describe('Orders: pricing, inventory reservation, status machine, cancellation',
       expect(cancelRes.body.data.cancelledBy).toBe('CUSTOMER');
     });
 
-    it('still allows cancellation while PREPARING (pre-pickup), but rejects it once READY_FOR_PICKUP', async () => {
+    it('rejects customer self-cancellation once the kitchen has started PREPARING', async () => {
       // `orderId` is currently PREPARING (advanced by the vendor-pipeline test
-      // above) — per the transition map, PREPARING is still a cancellable,
-      // pre-pickup state, so cancelling here should succeed...
+      // above). Policy: customers may only self-cancel while PENDING or
+      // CONFIRMED; once the kitchen begins preparing, only a VENDOR/ADMIN may
+      // cancel (e.g. to handle out-of-stock situations) — the customer call
+      // is rejected to prevent wasted food/labour.
       const cancelRes = await request(app)
         .post(`/api/v1/orders/${orderId}/cancel`)
         .set('Authorization', `Bearer ${customerToken}`)
-        .send({ reason: 'Still in time' });
-      expect(cancelRes.status).toBe(200);
-      expect(cancelRes.body.data.status).toBe('CANCELLED');
+        .send({ reason: 'Changed my mind' });
+      expect(cancelRes.status).toBe(400);
+      expect(cancelRes.body.error.code).toBe('ORDER_NOT_CANCELLABLE');
 
-      // ...but once an order reaches READY_FOR_PICKUP, it's no longer cancellable.
+      // READY_FOR_PICKUP is also blocked for a customer.
       const createRes = await request(app)
         .post('/api/v1/orders')
         .set('Authorization', `Bearer ${customerToken}`)

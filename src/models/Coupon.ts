@@ -1,5 +1,5 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { DISCOUNT_TYPES, GENERIC_STATUS } from '../constants/enums';
+import { DISCOUNT_TYPES, GENERIC_STATUS, PROMOTION_OWNER_TYPES } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 
 export interface ICoupon extends Document {
@@ -22,6 +22,16 @@ export interface ICoupon extends Document {
   // storeIds/categoryIds above. Checked in coupon.service.ts's applyCoupon
   // against the order's line items' global food item ids.
   foodItemIds: Types.ObjectId[];
+  // Admin-managed VendorType/StoreType ids — e.g. "every Pure Veg
+  // restaurant" or "every Pharmacy store". Empty means unscoped, same
+  // convention as vendorIds/storeIds. Matched against the ordering vendor's
+  // vendorTypeIds / store's storeTypeIds (any overlap counts).
+  vendorTypeIds: Types.ObjectId[];
+  storeTypeIds: Types.ObjectId[];
+  // PLATFORM (admin-created) or the VENDOR/STORE that created it itself — see
+  // PROMOTION_OWNER_TYPES and utils/promotionOwnership.ts.
+  ownerType: string;
+  ownerId?: Types.ObjectId;
   firstOrderOnly: boolean;
   startDate: Date;
   endDate: Date;
@@ -46,6 +56,10 @@ const couponSchema = new Schema<ICoupon>(
     storeIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Store' }], default: [] },
     categoryIds: { type: [{ type: Schema.Types.ObjectId }], default: [] },
     foodItemIds: { type: [{ type: Schema.Types.ObjectId, ref: 'FoodProduct' }], default: [] },
+    vendorTypeIds: { type: [{ type: Schema.Types.ObjectId, ref: 'VendorType' }], default: [] },
+    storeTypeIds: { type: [{ type: Schema.Types.ObjectId, ref: 'StoreType' }], default: [] },
+    ownerType: { type: String, enum: Object.values(PROMOTION_OWNER_TYPES), default: PROMOTION_OWNER_TYPES.PLATFORM, index: true },
+    ownerId: { type: Schema.Types.ObjectId, index: true },
     firstOrderOnly: { type: Boolean, default: false },
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true },
