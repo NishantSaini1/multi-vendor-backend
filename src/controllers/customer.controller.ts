@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import { catchAsync } from '../utils/catchAsync';
 import { sendSuccess, buildPagination } from '../utils/ApiResponse';
 import { parsePagination } from '../utils/pagination';
+import { Types } from 'mongoose';
+import { Order } from '../models/Order';
 import * as customerService from '../services/customer.service';
 
 export const list = catchAsync(async (req: Request, res: Response) => {
@@ -12,6 +14,16 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   if (req.query.search) {
     const regex = { $regex: String(req.query.search), $options: 'i' };
     filter.$or = [{ name: regex }, { phone: regex }, { email: regex }];
+  }
+
+  // Customers are not location-scoped themselves, but can be filtered by the
+  // location they have ordered from (i.e. they have at least one order in the
+  // given location).
+  if (req.query.locationId && Types.ObjectId.isValid(String(req.query.locationId))) {
+    const customerIds = await Order.distinct('customerId', {
+      locationId: new Types.ObjectId(String(req.query.locationId)),
+    });
+    filter._id = { $in: customerIds };
   }
 
   const { items, total } = await customerService.listCustomers(filter, pagination);
