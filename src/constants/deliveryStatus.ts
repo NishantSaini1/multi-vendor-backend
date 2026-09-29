@@ -35,6 +35,11 @@ export const DELIVERY_TO_ORDER_STATUS: Record<string, string | undefined> = {
   DELIVERED: 'DELIVERED',
 };
 
+export const DELIVERY_ASSIGNMENT_MODE = {
+  AUTO: 'AUTO',
+  MANUAL: 'MANUAL',
+} as const;
+
 export const DELIVERY_PARTNER_STATUS = {
   PENDING: 'PENDING',
   ACTIVE: 'ACTIVE',

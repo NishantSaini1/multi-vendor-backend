@@ -76,6 +76,19 @@ const envSchema = z.object({
   // separate, simpler flat percentage rather than a full Commission rule.
   PLATFORM_DELIVERY_MARGIN_PERCENT: z.coerce.number().default(20),
 
+  // Nearest-partner auto-assignment once an order is READY_FOR_PICKUP (see
+  // delivery.service.ts's autoAssignDeliveryPartner). Admins can always
+  // assign/reassign manually, whether this is on or off.
+  AUTO_ASSIGN_DELIVERY: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // Only ONLINE partners within this distance of the pickup point are offered the order.
+  AUTO_ASSIGN_RADIUS_KM: z.coerce.number().positive().default(5),
+  // An auto-assigned partner who neither accepts nor declines within this
+  // long is treated as having declined, and the next nearest partner is tried.
+  AUTO_ASSIGN_ACCEPT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(120),
+
   LOG_LEVEL: z.string().default('info'),
 
   BCRYPT_SALT_ROUNDS: z.coerce.number().default(12),

@@ -15,6 +15,8 @@ import { logger } from '../utils/logger';
 // sound the vendor app registers (vendor-mobile-app src/utils/pushNotifications.ts).
 const PUSH_OPTIONS_BY_TYPE: Partial<Record<string, ExpoPushOptions>> = {
   [NOTIFICATION_TYPES.NEW_ORDER]: { channelId: 'new-orders', sound: 'new_order_alarm.wav' },
+  // Delivery partner app's siren channel (delivery-partner-app src/utils/pushNotifications.ts).
+  [NOTIFICATION_TYPES.DELIVERY_ASSIGNED]: { channelId: 'deliveries_siren', sound: 'new_order_siren.wav' },
 };
 
 // Devices registered by the Expo apps hold an Expo push token; anything else

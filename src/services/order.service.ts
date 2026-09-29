@@ -34,6 +34,7 @@ import * as refundService from './refund.service';
 import * as couponService from './coupon.service';
 import * as notificationService from './notification.service';
 import * as ledgerService from './ledger.service';
+import { autoAssignDeliveryPartner } from './delivery.service';
 import { notifyOrderStatusChange } from '../utils/orderNotifications';
 import { NOTIFICATION_TYPES } from '../constants/enums';
 
@@ -690,6 +691,13 @@ export async function updateOrderStatus(id: string, newStatus: string, user: Jwt
   }
 
   await notifyOrderStatusChange(order, newStatus);
+
+  // Hand the order to the nearest free delivery partner right away (no-op if
+  // auto-assignment is off or nobody is online — the every-minute sweep and
+  // admins' manual assign cover that). Re-read so the response reflects it.
+  if (newStatus === 'READY_FOR_PICKUP' && (await autoAssignDeliveryPartner(order.id))) {
+    return withCustomer(await findOrderOrThrow(id));
+  }
 
   return withCustomer(order);
 }

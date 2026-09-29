@@ -122,6 +122,9 @@ export const NOTIFICATION_TYPES = {
   ORDER_PREPARING: 'ORDER_PREPARING',
   ORDER_READY: 'ORDER_READY',
   PARTNER_ASSIGNED: 'PARTNER_ASSIGNED',
+  // Delivery-partner-facing: a delivery was assigned to this partner (auto or
+  // by an admin) and is waiting for them to accept or decline.
+  DELIVERY_ASSIGNED: 'DELIVERY_ASSIGNED',
   ORDER_PICKED_UP: 'ORDER_PICKED_UP',
   ORDER_OUT_FOR_DELIVERY: 'ORDER_OUT_FOR_DELIVERY',
   ORDER_DELIVERED: 'ORDER_DELIVERED',

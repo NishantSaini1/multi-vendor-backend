@@ -1,5 +1,5 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { DELIVERY_STATUS } from '../constants/deliveryStatus';
+import { DELIVERY_STATUS, DELIVERY_ASSIGNMENT_MODE } from '../constants/deliveryStatus';
 
 export interface IDeliveryPoint {
   address: string;
@@ -27,6 +27,13 @@ export interface IDelivery extends Document {
   // net of the platform's delivery margin (env.PLATFORM_DELIVERY_MARGIN_PERCENT).
   deliveryFee?: number;
   partnerEarning?: number;
+  // How the current partner got this delivery: AUTO (nearest-partner
+  // auto-assignment) or MANUAL (an admin's assign/reassign).
+  assignmentMode: string;
+  // Partners who cancelled/declined (or let an auto-assignment time out) —
+  // auto-assignment never offers this order to them again. An admin can
+  // still assign one of them manually.
+  declinedPartnerIds: Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -57,10 +64,14 @@ const deliverySchema = new Schema<IDelivery>(
     distance: { type: Number },
     deliveryFee: { type: Number, min: 0 },
     partnerEarning: { type: Number, min: 0 },
+    assignmentMode: { type: String, enum: Object.values(DELIVERY_ASSIGNMENT_MODE), default: DELIVERY_ASSIGNMENT_MODE.MANUAL },
+    declinedPartnerIds: { type: [{ type: Schema.Types.ObjectId, ref: 'DeliveryPartner' }], default: [] },
   },
   { timestamps: true },
 );
 
 deliverySchema.index({ deliveryPartnerId: 1, status: 1 });
+// The auto-assignment sweep's "auto-assigned but not yet accepted" lookup.
+deliverySchema.index({ status: 1, assignmentMode: 1, assignedAt: 1 });
 
 export const Delivery = model<IDelivery>('Delivery', deliverySchema);

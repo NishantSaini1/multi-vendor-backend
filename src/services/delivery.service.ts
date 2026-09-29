@@ -20,7 +20,12 @@ import {
   DELIVERY_TO_ORDER_STATUS,
   DELIVERY_PARTNER_STATUS,
   DELIVERY_PARTNER_AVAILABILITY,
+  DELIVERY_ASSIGNMENT_MODE,
 } from '../constants/deliveryStatus';
+import { NOTIFICATION_TYPES } from '../constants/enums';
+import * as notificationService from './notification.service';
+import { logger } from '../utils/logger';
+import { SYSTEM_ACTOR } from '../utils/systemActor';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
 import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
@@ -88,6 +93,134 @@ async function resolvePickupPoint(order: InstanceType<typeof Order>) {
   return { address: store.address, latitude: store.latitude, longitude: store.longitude };
 }
 
+// Who performed an assignment, for the order history. Auto-assignment has no
+// human actor, so it records the shared SYSTEM_ACTOR (utils/systemActor.ts).
+type AssignmentActor = Pick<JwtPayload, 'userId' | 'userType'>;
+
+// The one place an order actually gets a partner, shared by an admin's manual
+// assign and auto-assignment. Race-safe: the order is only claimed while it's
+// still READY_FOR_PICKUP with no partner, and the partner only while still
+// ACTIVE + ONLINE, so two concurrent assignments can never double-book either.
+// Reuses the order's Delivery when a previous partner cancelled/failed it
+// (Delivery.orderId is unique — one Delivery per order, many partners over time).
+async function performAssignment(
+  order: InstanceType<typeof Order>,
+  partner: InstanceType<typeof DeliveryPartner>,
+  mode: string,
+  actor: AssignmentActor,
+) {
+  const pickup = await resolvePickupPoint(order);
+  const distanceKm = haversineDistanceKm(
+    pickup.latitude,
+    pickup.longitude,
+    order.deliveryAddress.latitude,
+    order.deliveryAddress.longitude,
+  );
+
+  const session = await mongoose.startSession();
+  let assigned: InstanceType<typeof Delivery> | undefined;
+  let claimedOrder: InstanceType<typeof Order> | null = null;
+  try {
+    await session.withTransaction(async () => {
+      claimedOrder = await Order.findOneAndUpdate(
+        { _id: order._id, status: 'READY_FOR_PICKUP', deliveryPartnerId: null },
+        { $set: { status: 'PARTNER_ASSIGNED', deliveryPartnerId: partner._id } },
+        { new: true, session },
+      );
+      if (!claimedOrder) {
+        throw ApiError.conflict('Order already has a delivery partner assigned or is not ready for pickup', 'ORDER_ALREADY_ASSIGNED');
+      }
+
+      const claimedPartner = await DeliveryPartner.findOneAndUpdate(
+        { _id: partner._id, status: DELIVERY_PARTNER_STATUS.ACTIVE, availability: DELIVERY_PARTNER_AVAILABILITY.ONLINE },
+        { $set: { availability: DELIVERY_PARTNER_AVAILABILITY.BUSY, currentOrderId: order._id } },
+        { new: true, session },
+      );
+      if (!claimedPartner) {
+        throw ApiError.unprocessable('Delivery partner is not available', 'DELIVERY_PARTNER_NOT_AVAILABLE');
+      }
+
+      // Snapshotted now, at assignment — the delivery partner's earning is
+      // fixed at this point rather than recomputed later against whatever
+      // the platform's margin config happens to be at DELIVERED time.
+      const deliveryFee = order.deliveryFee;
+      const partnerEarning = deliveryFee * (1 - env.PLATFORM_DELIVERY_MARGIN_PERCENT / 100);
+      const fields = {
+        deliveryPartnerId: partner._id,
+        pickupLocation: pickup,
+        dropLocation: {
+          address: order.deliveryAddress.address,
+          latitude: order.deliveryAddress.latitude,
+          longitude: order.deliveryAddress.longitude,
+        },
+        status: DELIVERY_STATUS.ASSIGNED,
+        assignedAt: new Date(),
+        distance: distanceKm,
+        deliveryFee,
+        partnerEarning,
+        assignmentMode: mode,
+      };
+
+      const existing = await Delivery.findOne({ orderId: order._id }).session(session);
+      let delivery: InstanceType<typeof Delivery>;
+      let oldDeliveryStatus: string | undefined;
+      if (existing) {
+        oldDeliveryStatus = existing.status;
+        Object.assign(existing, fields, {
+          acceptedAt: undefined,
+          arrivedAtPickupAt: undefined,
+          pickedUpAt: undefined,
+          outForDeliveryAt: undefined,
+        });
+        delivery = await existing.save({ session });
+      } else {
+        [delivery] = await Delivery.create([{ orderId: order._id, ...fields }], { session });
+      }
+
+      await DeliveryStatusHistory.create(
+        [{ deliveryId: delivery.id, oldStatus: oldDeliveryStatus, newStatus: DELIVERY_STATUS.ASSIGNED }],
+        { session },
+      );
+
+      claimedOrder.deliveryId = delivery._id;
+      await claimedOrder.save({ session });
+      await OrderStatusHistory.create(
+        [
+          {
+            orderId: order.id,
+            oldStatus: 'READY_FOR_PICKUP',
+            newStatus: 'PARTNER_ASSIGNED',
+            changedBy: actor.userId,
+            changedByType: actor.userType,
+            ...(mode === DELIVERY_ASSIGNMENT_MODE.AUTO ? { reason: `Auto-assigned to nearest available partner ${partner.id}` } : {}),
+          },
+        ],
+        { session },
+      );
+
+      assigned = delivery;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  await markPartnerInactive(partner.locationId.toString(), partner.id);
+  await notifyOrderStatusChange(claimedOrder!, 'PARTNER_ASSIGNED');
+  await notifyPartnerOfAssignment(partner.id, claimedOrder!, assigned!);
+  return assigned!;
+}
+
+async function notifyPartnerOfAssignment(partnerId: string, order: InstanceType<typeof Order>, delivery: InstanceType<typeof Delivery>) {
+  await notificationService.notify(
+    partnerId,
+    'DELIVERY_PARTNER',
+    NOTIFICATION_TYPES.DELIVERY_ASSIGNED,
+    'New delivery assigned',
+    `Order ${order.orderNumber} — pickup at ${delivery.pickupLocation.address}. Accept or decline in the app.`,
+    { orderId: order.id, deliveryId: delivery.id },
+  );
+}
+
 export async function assignDeliveryPartner(orderId: string, deliveryPartnerId: string, user: JwtPayload) {
   const order = await Order.findById(orderId);
   if (!order) throw ApiError.notFound('Order not found', 'ORDER_NOT_FOUND');
@@ -104,70 +237,159 @@ export async function assignDeliveryPartner(orderId: string, deliveryPartnerId: 
   if (!partner) throw ApiError.notFound('Delivery partner not found', 'DELIVERY_PARTNER_NOT_FOUND');
   await assertPartnerAssignable(partner, order.locationId.toString());
 
+  return performAssignment(order, partner, DELIVERY_ASSIGNMENT_MODE.MANUAL, user);
+}
+
+// ACTIVE + ONLINE partners of a location within radiusKm of a point, nearest
+// first. Reads each partner's last reported position straight from Mongo
+// (the source of truth) rather than the Redis/in-memory GEO set, which is
+// empty after a restart without Redis. Shared by auto-assignment and the
+// admin's GET /delivery/available-partners.
+export async function findOnlinePartnersNear(
+  locationId: string,
+  latitude: number,
+  longitude: number,
+  radiusKm: number,
+  excludePartnerIds: string[] = [],
+) {
+  const partners = await DeliveryPartner.find({
+    locationId,
+    status: DELIVERY_PARTNER_STATUS.ACTIVE,
+    availability: DELIVERY_PARTNER_AVAILABILITY.ONLINE,
+    _id: { $nin: excludePartnerIds },
+    currentLatitude: { $ne: null },
+    currentLongitude: { $ne: null },
+  });
+  return partners
+    .map((partner) => ({
+      partner,
+      distanceKm: haversineDistanceKm(latitude, longitude, partner.currentLatitude!, partner.currentLongitude!),
+    }))
+    .filter((c) => c.distanceKm <= radiusKm)
+    .sort((a, b) => a.distanceKm - b.distanceKm);
+}
+
+// Auto-assignment candidates for an order: near its pickup point within
+// AUTO_ASSIGN_RADIUS_KM, skipping anyone who already declined it.
+async function rankAutoAssignCandidates(order: InstanceType<typeof Order>, excludePartnerIds: string[]) {
   const pickup = await resolvePickupPoint(order);
-  const distanceKm = haversineDistanceKm(
-    pickup.latitude,
-    pickup.longitude,
-    order.deliveryAddress.latitude,
-    order.deliveryAddress.longitude,
-  );
+  return findOnlinePartnersNear(order.locationId.toString(), pickup.latitude, pickup.longitude, env.AUTO_ASSIGN_RADIUS_KM, excludePartnerIds);
+}
 
-  const session = await mongoose.startSession();
+// Offers a READY_FOR_PICKUP order with no partner to the nearest available
+// partner who hasn't declined it. Called when an order becomes
+// READY_FOR_PICKUP, right after a partner declines/fails a delivery, and by
+// the every-minute sweep (jobs/deliveryAutoAssign.job.ts) for orders that had
+// no one free earlier. Never throws: returns the new Delivery, or null when
+// auto-assignment is off, the order isn't waiting for a partner, or nobody
+// suitable is online right now (an admin can still assign manually).
+export async function autoAssignDeliveryPartner(orderId: string) {
+  if (!env.AUTO_ASSIGN_DELIVERY) return null;
   try {
-    let createdDelivery: InstanceType<typeof Delivery> | undefined;
+    const order = await Order.findById(orderId);
+    if (!order || order.status !== 'READY_FOR_PICKUP' || order.deliveryPartnerId) return null;
 
+    const existing = await Delivery.findOne({ orderId: order._id }, { declinedPartnerIds: 1 });
+    const declined = (existing?.declinedPartnerIds ?? []).map((id) => id.toString());
+
+    for (const { partner } of await rankAutoAssignCandidates(order, declined)) {
+      try {
+        return await performAssignment(order, partner, DELIVERY_ASSIGNMENT_MODE.AUTO, SYSTEM_ACTOR);
+      } catch (err) {
+        // Someone else claimed this partner in the meantime — try the next one.
+        if (err instanceof ApiError && err.code === 'DELIVERY_PARTNER_NOT_AVAILABLE') continue;
+        // The order itself was claimed (e.g. an admin assigned it) — done.
+        if (err instanceof ApiError && err.code === 'ORDER_ALREADY_ASSIGNED') return null;
+        throw err;
+      }
+    }
+    return null;
+  } catch (err) {
+    logger.error({ err, orderId }, 'Delivery auto-assignment failed');
+    return null;
+  }
+}
+
+// Every-minute sweep: (1) an auto-assigned partner who hasn't accepted within
+// AUTO_ASSIGN_ACCEPT_TIMEOUT_SECONDS is treated as having declined and the
+// order moves on to the next nearest partner; (2) any READY_FOR_PICKUP order
+// still without a partner (nobody was free before) gets another attempt.
+export async function runDeliveryAutoAssignSweep() {
+  if (!env.AUTO_ASSIGN_DELIVERY) return { timedOut: 0, assigned: 0 };
+
+  let timedOut = 0;
+  const cutoff = new Date(Date.now() - env.AUTO_ASSIGN_ACCEPT_TIMEOUT_SECONDS * 1000);
+  const stale = await Delivery.find({ status: DELIVERY_STATUS.ASSIGNED, assignmentMode: DELIVERY_ASSIGNMENT_MODE.AUTO, assignedAt: { $lte: cutoff } });
+  for (const delivery of stale) {
+    try {
+      await releaseDeclinedDelivery(delivery.id, 'No response within the acceptance window');
+      timedOut += 1;
+    } catch (err) {
+      logger.error({ err, deliveryId: delivery.id }, 'Failed to release an unaccepted auto-assigned delivery');
+    }
+  }
+
+  let assigned = 0;
+  const waiting = await Order.find({ status: 'READY_FOR_PICKUP', deliveryPartnerId: null }, { _id: 1 }).limit(200);
+  for (const order of waiting) {
+    if (await autoAssignDeliveryPartner(order.id)) assigned += 1;
+  }
+  return { timedOut, assigned };
+}
+
+// Takes an ASSIGNED delivery away from a partner who didn't respond in time:
+// the partner goes back ONLINE, is recorded as having declined, and the order
+// returns to READY_FOR_PICKUP for the next attempt.
+async function releaseDeclinedDelivery(deliveryId: string, reason: string) {
+  const session = await mongoose.startSession();
+  let released: InstanceType<typeof Delivery> | null = null;
+  try {
     await session.withTransaction(async () => {
-      // Snapshotted now, at assignment — the delivery partner's earning is
-      // fixed at this point rather than recomputed later against whatever
-      // the platform's margin config happens to be at DELIVERED time.
-      const deliveryFee = order.deliveryFee;
-      const partnerEarning = deliveryFee * (1 - env.PLATFORM_DELIVERY_MARGIN_PERCENT / 100);
-
-      const [delivery] = await Delivery.create(
+      released = await Delivery.findOneAndUpdate(
+        { _id: deliveryId, status: DELIVERY_STATUS.ASSIGNED },
+        { $set: { status: DELIVERY_STATUS.CANCELLED } },
+        { new: true, session },
+      );
+      if (!released) return; // accepted or cancelled meanwhile
+      const partnerId = released.deliveryPartnerId;
+      await Delivery.updateOne({ _id: deliveryId }, { $addToSet: { declinedPartnerIds: partnerId } }, { session });
+      await DeliveryStatusHistory.create(
+        [{ deliveryId, oldStatus: DELIVERY_STATUS.ASSIGNED, newStatus: DELIVERY_STATUS.CANCELLED }],
+        { session },
+      );
+      await DeliveryPartner.updateOne(
+        { _id: partnerId, status: DELIVERY_PARTNER_STATUS.ACTIVE, currentOrderId: released.orderId },
+        { $set: { availability: DELIVERY_PARTNER_AVAILABILITY.ONLINE }, $unset: { currentOrderId: 1 } },
+        { session },
+      );
+      await Order.updateOne(
+        { _id: released.orderId, status: 'PARTNER_ASSIGNED' },
+        { $set: { status: 'READY_FOR_PICKUP' }, $unset: { deliveryPartnerId: 1 } },
+        { session },
+      );
+      await OrderStatusHistory.create(
         [
           {
-            orderId: order.id,
-            deliveryPartnerId,
-            pickupLocation: pickup,
-            dropLocation: {
-              address: order.deliveryAddress.address,
-              latitude: order.deliveryAddress.latitude,
-              longitude: order.deliveryAddress.longitude,
-            },
-            status: DELIVERY_STATUS.ASSIGNED,
-            assignedAt: new Date(),
-            distance: distanceKm,
-            deliveryFee,
-            partnerEarning,
+            orderId: released.orderId,
+            oldStatus: 'PARTNER_ASSIGNED',
+            newStatus: 'READY_FOR_PICKUP',
+            changedBy: SYSTEM_ACTOR.userId,
+            changedByType: SYSTEM_ACTOR.userType,
+            reason: `Partner ${partnerId.toString()}: ${reason}`,
           },
         ],
         { session },
       );
-
-      await DeliveryStatusHistory.create([{ deliveryId: delivery.id, newStatus: DELIVERY_STATUS.ASSIGNED }], { session });
-
-      const oldOrderStatus = order.status;
-      order.deliveryPartnerId = new mongoose.Types.ObjectId(deliveryPartnerId);
-      order.deliveryId = delivery._id;
-      order.status = 'PARTNER_ASSIGNED';
-      await order.save({ session });
-      await OrderStatusHistory.create(
-        [{ orderId: order.id, oldStatus: oldOrderStatus, newStatus: 'PARTNER_ASSIGNED', changedBy: user.userId, changedByType: user.userType }],
-        { session },
-      );
-
-      partner.availability = DELIVERY_PARTNER_AVAILABILITY.BUSY;
-      partner.currentOrderId = order._id;
-      await partner.save({ session });
-
-      createdDelivery = delivery;
     });
-
-    await markPartnerInactive(partner.locationId.toString(), partner.id);
-    await notifyOrderStatusChange(order, 'PARTNER_ASSIGNED');
-    return createdDelivery!;
   } finally {
     await session.endSession();
+  }
+
+  if (released) {
+    const partner = await DeliveryPartner.findById((released as InstanceType<typeof Delivery>).deliveryPartnerId);
+    if (partner && partner.availability === DELIVERY_PARTNER_AVAILABILITY.ONLINE && partner.currentLatitude !== undefined && partner.currentLongitude !== undefined) {
+      await markPartnerActive(partner.locationId.toString(), partner.id, partner.currentLongitude, partner.currentLatitude);
+    }
   }
 }
 
@@ -197,6 +419,8 @@ export async function reassignDeliveryPartner(orderId: string, newDeliveryPartne
       delivery.status = DELIVERY_STATUS.ASSIGNED;
       delivery.assignedAt = new Date();
       delivery.acceptedAt = undefined;
+      // An admin's pick — the acceptance-timeout sweep leaves it alone.
+      delivery.assignmentMode = DELIVERY_ASSIGNMENT_MODE.MANUAL;
       await delivery.save({ session });
 
       await DeliveryStatusHistory.create(
@@ -242,6 +466,7 @@ export async function reassignDeliveryPartner(orderId: string, newDeliveryPartne
       await markPartnerActive(oldPartner.locationId.toString(), oldPartner.id, oldPartner.currentLongitude, oldPartner.currentLatitude);
     }
 
+    await notifyPartnerOfAssignment(newPartner.id, order, delivery);
     return delivery;
   } finally {
     await session.endSession();
@@ -355,6 +580,7 @@ export async function updateDeliveryStatus(id: string, newStatus: string, user: 
 
   let orderForNotify: InstanceType<typeof Order> | undefined;
   let mappedOrderStatusForNotify: string | undefined;
+  let revertedForReassignment = false;
 
   const session = await mongoose.startSession();
   try {
@@ -456,6 +682,9 @@ export async function updateDeliveryStatus(id: string, newStatus: string, user: 
       }
 
       if ((newStatus === DELIVERY_STATUS.CANCELLED || newStatus === DELIVERY_STATUS.FAILED) && partner) {
+        // Auto-assignment won't offer this order to them again.
+        await Delivery.updateOne({ _id: delivery._id }, { $addToSet: { declinedPartnerIds: partner._id } }, { session });
+        revertedForReassignment = true;
         partner.availability = DELIVERY_PARTNER_AVAILABILITY.ONLINE;
         partner.currentOrderId = undefined;
         partner.totalOrders += 1;
@@ -489,6 +718,12 @@ export async function updateDeliveryStatus(id: string, newStatus: string, user: 
 
     if (orderForNotify && mappedOrderStatusForNotify) {
       await notifyOrderStatusChange(orderForNotify, mappedOrderStatusForNotify);
+    }
+
+    // The partner declined/failed it — offer the order to the next nearest
+    // available partner straight away.
+    if (revertedForReassignment) {
+      await autoAssignDeliveryPartner(delivery.orderId.toString());
     }
 
     return delivery;

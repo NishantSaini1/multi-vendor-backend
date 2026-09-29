@@ -15,3 +15,8 @@ process.env.RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || 'te
 process.env.CLOUDINARY_CLOUD_NAME = '';
 process.env.CLOUDINARY_API_KEY = '';
 process.env.CLOUDINARY_API_SECRET = '';
+// Most suites drive delivery assignment by hand (POST /delivery/assign) and
+// expect a READY_FOR_PICKUP order to stay unassigned until they do — keep
+// nearest-partner auto-assignment off by default; deliveryAutoAssign.test.ts
+// switches it on for itself.
+process.env.AUTO_ASSIGN_DELIVERY = 'false';

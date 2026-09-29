@@ -1,10 +1,8 @@
-import { DeliveryPartner } from '../models/DeliveryPartner';
 import { Location } from '../models/Location';
 import { ApiError } from '../utils/ApiError';
 import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess } from '../middleware/rbac.middleware';
-import { findNearbyActivePartners } from './deliveryPartnerLocation.service';
-import { DELIVERY_PARTNER_STATUS, DELIVERY_PARTNER_AVAILABILITY } from '../constants/deliveryStatus';
+import { findOnlinePartnersNear } from './delivery.service';
 
 const DEFAULT_SEARCH_RADIUS_KM = 5;
 
@@ -17,10 +15,11 @@ export interface AvailablePartner {
 }
 
 // Discovers ONLINE, ACTIVE delivery partners near a pickup point within a
-// location, ranked by distance. This is the read-only "who could take this"
-// query from spec section 33 — actually assigning a partner to an order
-// (POST /delivery/assign, /reassign) is added once the Order module exists,
-// since a Delivery record requires a real orderId to attach to.
+// location, ranked by distance — the read-only "who could take this" query
+// from spec section 33 behind the admin's manual assign/reassign picker.
+// Uses the same Mongo-backed lookup as auto-assignment (see
+// delivery.service.ts's findOnlinePartnersNear), so the list is correct even
+// right after a restart without Redis.
 export async function findAvailablePartners(
   locationId: string,
   latitude: number,
@@ -32,26 +31,12 @@ export async function findAvailablePartners(
   if (!locationExists) throw ApiError.notFound('Location not found', 'LOCATION_NOT_FOUND');
   assertLocationAccess(user, locationId);
 
-  const nearby = await findNearbyActivePartners(locationId, longitude, latitude, radiusKm);
-  if (nearby.length === 0) return [];
-
-  const partners = await DeliveryPartner.find({
-    _id: { $in: nearby.map((n) => n.partnerId) },
-    status: DELIVERY_PARTNER_STATUS.ACTIVE,
-    availability: DELIVERY_PARTNER_AVAILABILITY.ONLINE,
-  });
-  const partnerById = new Map(partners.map((p) => [p.id, p]));
-
-  return nearby
-    .filter((n) => partnerById.has(n.partnerId))
-    .map((n) => {
-      const partner = partnerById.get(n.partnerId)!;
-      return {
-        id: partner.id,
-        name: partner.name,
-        phone: partner.phone,
-        rating: partner.rating,
-        distanceKm: n.distanceKm,
-      };
-    });
+  const nearby = await findOnlinePartnersNear(locationId, latitude, longitude, radiusKm);
+  return nearby.map(({ partner, distanceKm }) => ({
+    id: partner.id,
+    name: partner.name,
+    phone: partner.phone,
+    rating: partner.rating,
+    distanceKm,
+  }));
 }
