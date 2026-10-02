@@ -58,6 +58,10 @@ export const list = catchAsync(async (req: Request, res: Response) => {
     if (req.query.status) filter.status = req.query.status;
     if (req.query.approvalStatus) filter.approvalStatus = req.query.approvalStatus;
   }
+  if (req.query.categoryId) {
+    const ids = await vendorService.vendorIdsSellingCategory(String(req.query.categoryId), req.query.subcategoryId ? String(req.query.subcategoryId) : undefined);
+    filter._id = { $in: ids };
+  }
   if (req.query.search) filter.restaurantName = { $regex: String(req.query.search), $options: 'i' };
 
   // A customer passing their delivery coordinates gets only the restaurants

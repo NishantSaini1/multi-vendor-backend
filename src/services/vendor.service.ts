@@ -3,6 +3,7 @@ import { Vendor } from '../models/Vendor';
 import { VendorDocument } from '../models/VendorDocument';
 import { VendorFoodItem } from '../models/VendorFoodItem';
 import { FoodCategory } from '../models/FoodCategory';
+import { FoodProduct } from '../models/FoodProduct';
 import { Location } from '../models/Location';
 import { Commission } from '../models/Commission';
 import { ApiError } from '../utils/ApiError';
@@ -283,4 +284,19 @@ export async function deleteVendorDocument(vendorId: string, documentId: string,
 
   const document = await VendorDocument.findOneAndDelete({ _id: documentId, vendorId });
   if (!document) throw ApiError.notFound('Vendor document not found', 'VENDOR_DOCUMENT_NOT_FOUND');
+}
+
+// Ids of vendors that currently list at least one active item from a global
+// food category (optionally narrowed to a subcategory) — what a customer
+// tapping a category should see.
+export async function vendorIdsSellingCategory(categoryId: string, subcategoryId?: string): Promise<string[]> {
+  const productFilter: Record<string, unknown> = { categoryId };
+  if (subcategoryId) productFilter.subcategoryId = subcategoryId;
+  const productIds = await FoodProduct.find(productFilter).distinct('_id');
+  if (productIds.length === 0) return [];
+  const vendorIds = await VendorFoodItem.find({
+    globalFoodItemId: { $in: productIds },
+    status: GENERIC_STATUS.ACTIVE,
+  }).distinct('vendorId');
+  return vendorIds.map((id) => String(id));
 }

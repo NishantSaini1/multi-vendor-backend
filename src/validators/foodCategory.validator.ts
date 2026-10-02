@@ -10,6 +10,9 @@ export const createFoodCategorySchema = z.object({
     description: z.string().optional(),
     image: z.string().url().optional(),
     icon: z.string().optional(),
+    group: z.string().optional(),
+    locationId: objectId.nullable().optional(),
+    vendorTypeIds: z.array(objectId).optional(),
     displayOrder: z.number().int().default(0),
   }),
 });

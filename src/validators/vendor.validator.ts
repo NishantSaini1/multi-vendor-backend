@@ -85,6 +85,8 @@ export const listVendorsQuerySchema = z.object({
     status: z.enum(Object.values(VENDOR_STATUS) as [string, ...string[]]).optional(),
     approvalStatus: z.enum(Object.values(APPROVAL_STATUS) as [string, ...string[]]).optional(),
     search: z.string().optional(),
+    categoryId: objectId.optional(),
+    subcategoryId: objectId.optional(),
   }),
 });
 

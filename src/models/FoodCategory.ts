@@ -19,6 +19,9 @@ export interface IFoodCategory extends Document {
   description?: string;
   image?: string;
   icon?: string;
+  group?: string;
+  locationId?: Types.ObjectId | null;
+  vendorTypeIds?: Types.ObjectId[];
   displayOrder: number;
   status: string;
   createdAt: Date;
@@ -33,6 +36,9 @@ const foodCategorySchema = new Schema<IFoodCategory>(
     description: { type: String },
     image: { type: String },
     icon: { type: String },
+    group: { type: String, trim: true },
+    locationId: { type: Schema.Types.ObjectId, ref: 'Location', default: null, index: true },
+    vendorTypeIds: [{ type: Schema.Types.ObjectId, ref: 'VendorType' }],
     displayOrder: { type: Number, default: 0 },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },
   },
