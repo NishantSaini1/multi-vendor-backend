@@ -21,9 +21,13 @@ const vendorOrAdmin = authenticate('ADMIN', 'VENDOR');
 const storeOrAdmin = authenticate('ADMIN', 'STORE');
 
 router.get('/vendors/:id', vendorOrAdmin, requirePermission(PERMISSIONS.VENDOR_VIEW), validate(pricingIdParamSchema), controller.getVendorPricing);
+// PUT and PATCH both: the body is a partial update, and the admin panel sends
+// PATCH while the vendor/store apps send PUT.
 router.put('/vendors/:id', vendorOrAdmin, requirePermission(PERMISSIONS.VENDOR_UPDATE), validate(updatePricingSchema), controller.updateVendorPricing);
+router.patch('/vendors/:id', vendorOrAdmin, requirePermission(PERMISSIONS.VENDOR_UPDATE), validate(updatePricingSchema), controller.updateVendorPricing);
 router.get('/stores/:id', storeOrAdmin, requirePermission(PERMISSIONS.STORE_VIEW), validate(pricingIdParamSchema), controller.getStorePricing);
 router.put('/stores/:id', storeOrAdmin, requirePermission(PERMISSIONS.STORE_UPDATE), validate(updatePricingSchema), controller.updateStorePricing);
+router.patch('/stores/:id', storeOrAdmin, requirePermission(PERMISSIONS.STORE_UPDATE), validate(updatePricingSchema), controller.updateStorePricing);
 
 router.get('/preview', authenticate('ADMIN', 'VENDOR', 'STORE'), validate(pricingPreviewQuerySchema), controller.preview);
 
