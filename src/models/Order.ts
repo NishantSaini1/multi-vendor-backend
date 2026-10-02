@@ -1,7 +1,7 @@
 import { Schema, model, Document, Types } from 'mongoose';
 import { BUSINESS_TYPES, ORDER_STATUS_VALUES } from '../constants/orderStatus';
 import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
-import { DISCOUNT_TYPES } from '../constants/enums';
+import { DISCOUNT_TYPES, PRICING_MODELS } from '../constants/enums';
 
 export interface IOrderAddressSnapshot {
   address: string;
@@ -39,6 +39,22 @@ export interface IOrder extends Document {
   commissionRate?: number;
   commissionBaseAmount?: number;
   commissionAmount?: number;
+  // Pricing-model snapshot, captured at order creation alongside the
+  // commission snapshot above (a later change to the vendor's/store's model
+  // never changes an already-placed order). All unset on orders placed before
+  // pricing models existed, which are treated as COMMISSION.
+  //   customerPrice  — what the customer pays for the items (subtotal - discount)
+  //   markupAmount   — MARKUP model only: platform's cut baked into customerPrice
+  //   vendorSettlementAmount — what the vendor/store is owed for the items
+  //   platformProfit — commissionAmount (COMMISSION) or markupAmount (MARKUP)
+  pricingModel?: string;
+  markupType?: string;
+  markupValue?: number;
+  customerPrice?: number;
+  vendorBaseAmount?: number;
+  markupAmount?: number;
+  vendorSettlementAmount?: number;
+  platformProfit?: number;
   paymentId?: Types.ObjectId;
   paymentMethod: string;
   paymentStatus: string;
@@ -86,6 +102,14 @@ const orderSchema = new Schema<IOrder>(
     commissionRate: { type: Number, min: 0 },
     commissionBaseAmount: { type: Number, min: 0 },
     commissionAmount: { type: Number, min: 0 },
+    pricingModel: { type: String, enum: Object.values(PRICING_MODELS) },
+    markupType: { type: String, enum: Object.values(DISCOUNT_TYPES) },
+    markupValue: { type: Number, min: 0 },
+    customerPrice: { type: Number, min: 0 },
+    vendorBaseAmount: { type: Number, min: 0 },
+    markupAmount: { type: Number, min: 0 },
+    vendorSettlementAmount: { type: Number },
+    platformProfit: { type: Number },
     paymentId: { type: Schema.Types.ObjectId, ref: 'Payment' },
     paymentMethod: { type: String, enum: Object.values(PAYMENT_METHODS), required: true },
     paymentStatus: { type: String, enum: Object.values(PAYMENT_STATUS), default: PAYMENT_STATUS.PENDING },

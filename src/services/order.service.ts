@@ -24,6 +24,7 @@ import { checkServiceability } from './serviceability.service';
 import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
 import * as commissionService from './commission.service';
+import { buildOrderPricingSnapshot, customerUnitPrice, isMarkupModel, loadPricingConfig } from './pricing.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { FOOD_ORDER_TRANSITIONS, INSTAMART_ORDER_TRANSITIONS } from '../constants/orderStatus';
 import { PAYMENT_METHODS, PAYMENT_STATUS, WALLET_TRANSACTION_TYPES } from '../constants/paymentStatus';
@@ -67,7 +68,13 @@ interface PreparedOrderItem {
   productId: string;
   variantId?: string;
   name: string;
+  // Customer-facing unit price (vendor price + markup under the MARKUP model).
   price: number;
+  // The vendor's own original unit price, and the same line's subtotal/discount
+  // priced at it — what the vendor is owed under MARKUP (see pricing.service).
+  vendorPrice: number;
+  vendorLineSubtotal: number;
+  vendorLineDiscount: number;
   quantity: number;
   modifiers: IOrderItemModifier[];
   itemTotal: number;
@@ -132,12 +139,16 @@ async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[])
       0,
       resolved.modifiersUnitTotal,
     );
+    const vendorLine = computeLine(resolved.vendorUnitPrice, input.quantity, 0, 0, resolved.vendorModifiersUnitTotal);
 
     prepared.push({
       productId: resolved.vendorFoodItem.id,
       variantId: input.variantId,
       name: resolved.name,
       price: resolved.unitPrice,
+      vendorPrice: resolved.vendorUnitPrice,
+      vendorLineSubtotal: vendorLine.lineSubtotal,
+      vendorLineDiscount: vendorLine.lineDiscount,
       quantity: input.quantity,
       modifiers: resolved.modifiers,
       itemTotal,
@@ -153,6 +164,7 @@ async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[])
 
 async function prepareInstamartItems(storeId: string, items: CreateOrderItemInput[]): Promise<PreparedOrderItem[]> {
   const prepared: PreparedOrderItem[] = [];
+  const pricing = await loadPricingConfig('STORE', storeId);
 
   for (const input of items) {
     if (input.modifiers.length > 0) {
@@ -184,7 +196,7 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
     // sellingPrice/mrp (its own pack size/unit) is always a valid, orderable
     // choice in its own right, same as any named variant — variants are
     // additional pack-size options alongside it, not a replacement for it.
-    let unitPrice = product.sellingPrice;
+    let vendorUnitPrice = product.sellingPrice;
     if (input.variantId) {
       const variant = await InstamartVariant.findById(input.variantId);
       if (!variant || variant.productId.toString() !== product.id) {
@@ -193,8 +205,9 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       if (variant.status !== GENERIC_STATUS.ACTIVE) {
         throw ApiError.unprocessable(`${globalProduct.name} (${variant.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
       }
-      unitPrice = variant.sellingPrice;
+      vendorUnitPrice = variant.sellingPrice;
     }
+    const unitPrice = customerUnitPrice(vendorUnitPrice, pricing);
 
     // Authoritative stock check happens again inside the transaction below;
     // this pre-check just fails fast for the common case.
@@ -209,12 +222,16 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       product.discount,
       globalProduct.gst,
     );
+    const vendorLine = computeLine(vendorUnitPrice, input.quantity, product.discount, globalProduct.gst);
 
     prepared.push({
       productId: product.id,
       variantId: input.variantId,
       name: globalProduct.name,
       price: unitPrice,
+      vendorPrice: vendorUnitPrice,
+      vendorLineSubtotal: vendorLine.lineSubtotal,
+      vendorLineDiscount: vendorLine.lineDiscount,
       quantity: input.quantity,
       modifiers: [],
       itemTotal,
@@ -342,13 +359,20 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   // payees (delivery partners have no Commission entity of their own).
   // `resolveCommission` returning null means 100% payable, no commission —
   // all four fields stay unset.
+  //
+  // Pricing model: a vendor/store on MARKUP pays no commission — the platform's
+  // cut is the markup already baked into the prices above — so commission is
+  // only resolved for COMMISSION-model sellers.
+  const pricingConfig = await loadPricingConfig(businessType === BUSINESS_TYPES.FOOD ? 'VENDOR' : 'STORE', (vendorId ?? storeId)!);
   const commissionBaseAmount = subtotal - discount;
-  const commission = await commissionService.resolveCommission({
-    locationId: location.id,
-    vendorId,
-    storeId,
-    businessType,
-  });
+  const commission = isMarkupModel(pricingConfig)
+    ? null
+    : await commissionService.resolveCommission({
+        locationId: location.id,
+        vendorId,
+        storeId,
+        businessType,
+      });
   const commissionType = commission?.type;
   const commissionRate = commission?.value;
   const commissionAmount = commission
@@ -356,6 +380,13 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       ? commissionBaseAmount * (commission.value / 100)
       : commission.value
     : undefined;
+
+  const pricingSnapshot = buildOrderPricingSnapshot({
+    config: pricingConfig,
+    customerAmount: subtotal - discount,
+    vendorAmount: preparedItems.reduce((sum, i) => sum + (i.vendorLineSubtotal - i.vendorLineDiscount), 0),
+    commissionAmount,
+  });
 
   const session = await mongoose.startSession();
   try {
@@ -433,6 +464,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
             commissionRate,
             commissionBaseAmount: commission ? commissionBaseAmount : undefined,
             commissionAmount,
+            ...pricingSnapshot,
             paymentMethod: data.paymentMethod,
             paymentStatus: PAYMENT_STATUS.PENDING,
             deliveryAddress: {
@@ -502,6 +534,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           variantId: item.variantId,
           name: item.name,
           price: item.price,
+          vendorPrice: item.vendorPrice,
           quantity: item.quantity,
           modifiers: item.modifiers,
           itemTotal: item.itemTotal,
@@ -541,11 +574,17 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       `Your order ${createdOrder!.orderNumber} has been placed.`,
       { orderId: createdOrder!.id },
     );
-    // Rings the vendor app's new-order siren, even with the app closed.
-    if (createdOrder!.vendorId) {
+    // Rings the vendor app's new-order siren, even with the app closed. An
+    // Instamart order alerts the store the same way (it previously got none).
+    const sellerAlert = createdOrder!.vendorId
+      ? { id: createdOrder!.vendorId.toString(), userType: 'VENDOR' as const }
+      : createdOrder!.storeId
+        ? { id: createdOrder!.storeId.toString(), userType: 'STORE' as const }
+        : undefined;
+    if (sellerAlert) {
       await notificationService.notify(
-        createdOrder!.vendorId.toString(),
-        'VENDOR',
+        sellerAlert.id,
+        sellerAlert.userType,
         NOTIFICATION_TYPES.NEW_ORDER,
         'New order received!',
         `Order ${createdOrder!.orderNumber} • ₹${createdOrder!.total} — tap to accept.`,

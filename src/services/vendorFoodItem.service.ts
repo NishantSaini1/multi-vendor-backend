@@ -10,6 +10,14 @@ import { assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
 import { findFoodProductOrThrow } from './foodProduct.service';
 import { assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
+import { DEFAULT_PRICING_CONFIG, markupFoodItem, markupFoodVariant, markupModifierOption, toPricingConfig } from './pricing.service';
+
+// The pricing config to apply to what `user` is about to read: a CUSTOMER sees
+// the marked-up price under the MARKUP pricing model (see pricing.service.ts);
+// the vendor and admins see the vendor's own prices.
+function pricingFor(user: JwtPayload, vendor: Parameters<typeof toPricingConfig>[0]) {
+  return user.userType === 'CUSTOMER' ? toPricingConfig(vendor) : DEFAULT_PRICING_CONFIG;
+}
 
 async function assertVendorAccess(vendorId: string, user: JwtPayload) {
   const vendor = await Vendor.findById(vendorId);
@@ -31,7 +39,7 @@ export async function listVendorFoodItems(
   pagination: PaginationParams,
   user: JwtPayload,
 ) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   const query = { ...filter, vendorId };
   const [items, total] = await Promise.all([
     VendorFoodItem.find(query)
@@ -41,7 +49,9 @@ export async function listVendorFoodItems(
       .limit(pagination.limit),
     VendorFoodItem.countDocuments(query),
   ]);
-  return { items, total };
+  const pricing = pricingFor(user, vendor);
+  if (pricing === DEFAULT_PRICING_CONFIG) return { items, total };
+  return { items: items.map((item) => markupFoodItem(item.toJSON() as Record<string, unknown>, pricing)), total };
 }
 
 // "Add existing item" — a vendor picks a globalFoodItemId from the browsable
@@ -95,10 +105,11 @@ export async function findVendorFoodItemOrThrow(vendorId: string, id: string) {
 }
 
 export async function getVendorFoodItemById(vendorId: string, id: string, user: JwtPayload) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   const item = await findVendorFoodItemOrThrow(vendorId, id);
   await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
-  return item;
+  const pricing = pricingFor(user, vendor);
+  return pricing === DEFAULT_PRICING_CONFIG ? item : markupFoodItem(item.toJSON() as Record<string, unknown>, pricing);
 }
 
 export async function updateVendorFoodItem(vendorId: string, id: string, data: Record<string, unknown>, user: JwtPayload) {
@@ -139,9 +150,12 @@ export async function updateVendorFoodItemAvailability(
 // --- Variants ---
 
 export async function listFoodVariants(vendorId: string, itemId: string, user: JwtPayload) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
-  return FoodVariant.find({ vendorFoodItemId: itemId }).sort({ isDefault: -1, name: 1 });
+  const variants = await FoodVariant.find({ vendorFoodItemId: itemId }).sort({ isDefault: -1, name: 1 });
+  const pricing = pricingFor(user, vendor);
+  if (pricing === DEFAULT_PRICING_CONFIG) return variants;
+  return variants.map((variant) => markupFoodVariant(variant.toJSON() as Record<string, unknown>, pricing));
 }
 
 export async function createFoodVariant(vendorId: string, itemId: string, data: Record<string, unknown>, user: JwtPayload) {
@@ -222,10 +236,13 @@ export async function deleteModifierGroup(vendorId: string, itemId: string, grou
 // --- Modifier options ---
 
 export async function listModifierOptions(vendorId: string, itemId: string, groupId: string, user: JwtPayload) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
   await findModifierGroupOrThrow(itemId, groupId);
-  return ModifierOption.find({ modifierGroupId: groupId }).sort({ createdAt: 1 });
+  const options = await ModifierOption.find({ modifierGroupId: groupId }).sort({ createdAt: 1 });
+  const pricing = pricingFor(user, vendor);
+  if (pricing === DEFAULT_PRICING_CONFIG) return options;
+  return options.map((option) => markupModifierOption(option.toJSON() as Record<string, unknown>, pricing));
 }
 
 export async function createModifierOption(

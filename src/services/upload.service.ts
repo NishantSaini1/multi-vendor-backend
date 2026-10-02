@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { cloudinary } from '../config/cloudinary';
 import { env } from '../config/env';
 import { ApiError } from '../utils/ApiError';
@@ -8,10 +9,26 @@ export function isCloudinaryConfigured(): boolean {
 
 const UPLOAD_FOLDER = 'multi-vendor-backend';
 
+// Resize + re-encode the image before upload. Limits:
+//   • max 1200 × 1200 px (delivery proof photos don't need more)
+//   • JPEG at quality 75, progressive encoding
+//   • EXIF stripped (no GPS metadata leakage in uploaded file)
+// The output is always a Buffer so the caller doesn't need to change.
+export async function compressImageBuffer(buffer: Buffer, maxDimension = 1200, quality = 75): Promise<Buffer> {
+  return sharp(buffer)
+    .rotate()               // respect EXIF orientation before stripping it
+    .resize(maxDimension, maxDimension, { fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality, progressive: true, mozjpeg: true })
+    .withMetadata({ exif: {} })  // strip all EXIF
+    .toBuffer();
+}
+
 export async function uploadImageBuffer(buffer: Buffer, folder = UPLOAD_FOLDER): Promise<{ url: string; publicId: string }> {
   if (!isCloudinaryConfigured()) {
     throw ApiError.internal('Image uploads are not configured on this server', 'UPLOAD_NOT_CONFIGURED');
   }
+
+  const compressed = await compressImageBuffer(buffer);
 
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream({ folder, resource_type: 'image' }, (err, result) => {
@@ -21,7 +38,7 @@ export async function uploadImageBuffer(buffer: Buffer, folder = UPLOAD_FOLDER):
       }
       resolve({ url: result.secure_url, publicId: result.public_id });
     });
-    stream.end(buffer);
+    stream.end(compressed);
   });
 }
 

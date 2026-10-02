@@ -48,3 +48,52 @@ export const updateStatus = catchAsync(async (req: Request, res: Response) => {
   });
   sendSuccess(res, delivery, 'Delivery status updated');
 });
+
+// GET — vendor or admin fetches the current pickup OTP to display in the vendor app.
+export const getVendorOtp = catchAsync(async (req: Request, res: Response) => {
+  const result = await deliveryService.getVendorOtp(req.params.id, requireUser(req));
+  sendSuccess(res, result, 'Vendor OTP');
+});
+
+// POST — vendor generates (or regenerates) the pickup OTP.
+export const generateVendorOtp = catchAsync(async (req: Request, res: Response) => {
+  const result = await deliveryService.generateVendorOtp(req.params.id, requireUser(req));
+  sendSuccess(res, result, 'Vendor OTP generated');
+});
+
+// GET — customer or admin fetches their delivery OTP to display in the customer app.
+export const getCustomerOtp = catchAsync(async (req: Request, res: Response) => {
+  const result = await deliveryService.getCustomerOtp(req.params.id, requireUser(req));
+  sendSuccess(res, result, 'Customer OTP');
+});
+
+// POST — customer requests regeneration of their delivery OTP.
+export const generateCustomerOtp = catchAsync(async (req: Request, res: Response) => {
+  await deliveryService.generateCustomerOtp(req.params.id, requireUser(req));
+  sendSuccess(res, null, 'Customer OTP refreshed — check your app');
+});
+
+export const verifyPickup = catchAsync(async (req: Request, res: Response) => {
+  if (!req.file) throw ApiError.badRequest('Package image is required', 'IMAGE_REQUIRED');
+  const { otp, latitude, longitude } = req.body;
+  const delivery = await deliveryService.verifyPickup(req.params.id, {
+    otp,
+    imageBuffer: req.file.buffer,
+    latitude: parseFloat(latitude),
+    longitude: parseFloat(longitude),
+  }, requireUser(req));
+  sendSuccess(res, delivery, 'Pickup verified — status updated to PICKED_UP');
+});
+
+export const verifyDelivery = catchAsync(async (req: Request, res: Response) => {
+  if (!req.file) throw ApiError.badRequest('Delivery image is required', 'IMAGE_REQUIRED');
+  const { otp, latitude, longitude, cashCollected } = req.body;
+  const delivery = await deliveryService.verifyDelivery(req.params.id, {
+    otp,
+    imageBuffer: req.file.buffer,
+    latitude: parseFloat(latitude),
+    longitude: parseFloat(longitude),
+    cashCollected: cashCollected === 'true' || cashCollected === true,
+  }, requireUser(req));
+  sendSuccess(res, delivery, 'Delivery verified — order marked DELIVERED');
+});

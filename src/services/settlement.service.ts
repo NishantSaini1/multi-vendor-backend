@@ -16,6 +16,9 @@ interface PayeeGroup {
   orderIds: string[];
   grossAmount: number;
   commissionAmount: number;
+  // Platform markup withheld on MARKUP-model orders (VENDOR_MARKUP ledger
+  // rows) — kept apart from commission so a settlement shows both.
+  markupAmount: number;
 }
 
 // Sources a VENDOR/STORE settlement group from the ledger's VENDOR_COMMISSION
@@ -35,22 +38,23 @@ async function buildVendorOrStoreGroups(
   const payeeField = payeeType === SETTLEMENT_PAYEE_TYPES.VENDOR ? 'vendorId' : 'storeId';
 
   const commissionRows = await Transaction.find({
-    type: TRANSACTION_TYPE.VENDOR_COMMISSION,
+    type: { $in: [TRANSACTION_TYPE.VENDOR_COMMISSION, TRANSACTION_TYPE.VENDOR_MARKUP] },
     [payeeField]: { $exists: true, $ne: null },
     createdAt: { $gte: periodStart, $lt: periodEnd },
   });
 
-  const rowGroups = new Map<string, { orderIds: Set<string>; commissionAmount: number }>();
+  const rowGroups = new Map<string, { orderIds: Set<string>; commissionAmount: number; markupAmount: number }>();
   for (const row of commissionRows) {
     const payeeId = (row as unknown as Record<string, { toString(): string } | undefined>)[payeeField]?.toString();
     if (!payeeId || !row.orderId) continue;
     let group = rowGroups.get(payeeId);
     if (!group) {
-      group = { orderIds: new Set(), commissionAmount: 0 };
+      group = { orderIds: new Set(), commissionAmount: 0, markupAmount: 0 };
       rowGroups.set(payeeId, group);
     }
     group.orderIds.add(row.orderId.toString());
-    group.commissionAmount += row.amount;
+    if (row.type === TRANSACTION_TYPE.VENDOR_MARKUP) group.markupAmount += row.amount;
+    else group.commissionAmount += row.amount;
   }
 
   const result = new Map<string, PayeeGroup>();
@@ -64,6 +68,7 @@ async function buildVendorOrStoreGroups(
       orderIds,
       grossAmount,
       commissionAmount: group.commissionAmount,
+      markupAmount: group.markupAmount,
     });
   }
   return result;
@@ -105,6 +110,7 @@ async function buildDeliveryPartnerGroups(periodStart: Date, periodEnd: Date): P
       orderIds: [...group.orderIds],
       grossAmount: group.grossAmount,
       commissionAmount: 0,
+      markupAmount: 0,
     });
   }
   return result;
@@ -147,7 +153,7 @@ export async function generateSettlements(
       continue;
     }
 
-    const netAmount = group.grossAmount - group.commissionAmount;
+    const netAmount = group.grossAmount - group.commissionAmount - group.markupAmount;
     const settlement = await Settlement.create({
       payeeType: data.payeeType,
       payeeId,
@@ -156,6 +162,7 @@ export async function generateSettlements(
       periodEnd,
       grossAmount: group.grossAmount,
       commissionAmount: group.commissionAmount,
+      markupAmount: group.markupAmount,
       adjustments: 0,
       netAmount,
       status: SETTLEMENT_STATUS.PENDING,
@@ -216,7 +223,7 @@ export async function updateSettlementAdjustments(id: string, adjustments: numbe
     throw ApiError.badRequest('Adjustments can only be edited while a settlement is PENDING', 'SETTLEMENT_NOT_PENDING');
   }
   settlement.adjustments = adjustments;
-  settlement.netAmount = settlement.grossAmount - settlement.commissionAmount + adjustments;
+  settlement.netAmount = settlement.grossAmount - settlement.commissionAmount - (settlement.markupAmount ?? 0) + adjustments;
   await settlement.save();
   return settlement;
 }

@@ -8,6 +8,7 @@ import { InstamartGlobalProduct } from '../models/InstamartGlobalProduct';
 import { InstamartCategory } from '../models/InstamartCategory';
 import { VENDOR_STATUS, APPROVAL_STATUS, STORE_STATUS, GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
+import { markupFoodItem, markupMartListing, toPricingConfig } from './pricing.service';
 
 interface SearchFilter {
   locationId?: string;
@@ -113,7 +114,7 @@ export async function search(query: string, filter: SearchFilter) {
       status: GENERIC_STATUS.ACTIVE,
     })
       .limit(RESULT_LIMIT)
-      .populate('vendorId', 'restaurantName logo rating ratingCount');
+      .populate('vendorId', 'restaurantName logo rating ratingCount pricingModel markupType markupValue');
 
     foodProducts = listings
       .filter((listing) => listing.vendorId)
@@ -132,10 +133,14 @@ export async function search(query: string, filter: SearchFilter) {
           logo?: string;
           rating: number;
           ratingCount: number;
+          pricingModel?: string;
+          markupType?: string;
+          markupValue?: number;
         };
         plain.vendorId = vendor._id;
         plain.vendor = { _id: vendor._id, restaurantName: vendor.restaurantName, logo: vendor.logo, rating: vendor.rating, ratingCount: vendor.ratingCount };
-        return plain;
+        // Search is customer-facing: show the price they'd pay (see pricing.service.ts).
+        return markupFoodItem(plain, toPricingConfig(vendor));
       });
   }
 
@@ -151,7 +156,7 @@ export async function search(query: string, filter: SearchFilter) {
       ...scope,
     })
       .limit(RESULT_LIMIT)
-      .populate('storeId', 'name logo rating ratingCount');
+      .populate('storeId', 'name logo rating ratingCount pricingModel markupType markupValue');
 
     instamartProducts = mappings
       .filter((mapping) => mapping.storeId)
@@ -167,10 +172,19 @@ export async function search(query: string, filter: SearchFilter) {
           weight: globalProduct.weight,
           mrp: globalProduct.mrp,
         });
-        const store = plain.storeId as unknown as { _id: unknown; name: string; logo?: string; rating: number; ratingCount: number };
+        const store = plain.storeId as unknown as {
+          _id: unknown;
+          name: string;
+          logo?: string;
+          rating: number;
+          ratingCount: number;
+          pricingModel?: string;
+          markupType?: string;
+          markupValue?: number;
+        };
         plain.storeId = store._id;
         plain.store = { _id: store._id, name: store.name, logo: store.logo, rating: store.rating, ratingCount: store.ratingCount };
-        return plain;
+        return markupMartListing(plain, toPricingConfig(store));
       });
   }
 

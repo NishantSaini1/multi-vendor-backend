@@ -31,12 +31,14 @@ import { TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
 import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
 import { Payment } from '../models/Payment';
 import { env } from '../config/env';
+import { generateOtp, hashOtp, verifyOtpHash } from '../utils/otp';
+import { uploadImageBuffer } from './upload.service';
 
 const DELIVERY_STATUS_TIMESTAMP_FIELD: Record<string, keyof IDelivery | undefined> = {
-  ACCEPTED: 'acceptedAt',
-  ARRIVED_AT_PICKUP: 'arrivedAtPickupAt',
+  ARRIVED_AT_VENDOR: 'arrivedAtVendorAt',
   PICKED_UP: 'pickedUpAt',
   OUT_FOR_DELIVERY: 'outForDeliveryAt',
+  ARRIVED_AT_CUSTOMER: 'arrivedAtCustomerAt',
   DELIVERED: 'deliveredAt',
 };
 
@@ -167,10 +169,24 @@ async function performAssignment(
       if (existing) {
         oldDeliveryStatus = existing.status;
         Object.assign(existing, fields, {
-          acceptedAt: undefined,
-          arrivedAtPickupAt: undefined,
+          arrivedAtVendorAt: undefined,
           pickedUpAt: undefined,
           outForDeliveryAt: undefined,
+          arrivedAtCustomerAt: undefined,
+          vendorOtpHash: undefined,
+          vendorOtpVerified: undefined,
+          customerOtpHash: undefined,
+          customerOtpVerified: undefined,
+          pickupImageUrl: undefined,
+          pickupImagePublicId: undefined,
+          pickupLatitude: undefined,
+          pickupLongitude: undefined,
+          pickupTimestamp: undefined,
+          deliveryImageUrl: undefined,
+          deliveryImagePublicId: undefined,
+          deliveryLatitude: undefined,
+          deliveryLongitude: undefined,
+          deliveryTimestamp: undefined,
         });
         delivery = await existing.save({ session });
       } else {
@@ -400,7 +416,7 @@ export async function reassignDeliveryPartner(orderId: string, newDeliveryPartne
 
   const delivery = await Delivery.findOne({ orderId });
   if (!delivery) throw ApiError.notFound('Delivery not found for this order', 'DELIVERY_NOT_FOUND');
-  if (![DELIVERY_STATUS.ASSIGNED, DELIVERY_STATUS.ACCEPTED].includes(delivery.status as typeof DELIVERY_STATUS.ASSIGNED)) {
+  if (![DELIVERY_STATUS.ASSIGNED, DELIVERY_STATUS.ARRIVED_AT_VENDOR].includes(delivery.status as typeof DELIVERY_STATUS.ASSIGNED)) {
     throw ApiError.badRequest('Delivery can only be reassigned before pickup', 'DELIVERY_NOT_REASSIGNABLE');
   }
 
@@ -418,7 +434,9 @@ export async function reassignDeliveryPartner(orderId: string, newDeliveryPartne
       delivery.deliveryPartnerId = newPartner._id;
       delivery.status = DELIVERY_STATUS.ASSIGNED;
       delivery.assignedAt = new Date();
-      delivery.acceptedAt = undefined;
+      delivery.arrivedAtVendorAt = undefined;
+      delivery.vendorOtpHash = undefined;
+      delivery.vendorOtpVerified = undefined;
       // An admin's pick — the acceptance-timeout sweep leaves it alone.
       delivery.assignmentMode = DELIVERY_ASSIGNMENT_MODE.MANUAL;
       await delivery.save({ session });
@@ -503,11 +521,15 @@ export async function getDeliveryTracking(id: string, user: JwtPayload) {
     distance: delivery.distance,
     estimatedTime: delivery.estimatedTime,
     assignedAt: delivery.assignedAt,
-    acceptedAt: delivery.acceptedAt,
-    arrivedAtPickupAt: delivery.arrivedAtPickupAt,
+    arrivedAtVendorAt: delivery.arrivedAtVendorAt,
     pickedUpAt: delivery.pickedUpAt,
     outForDeliveryAt: delivery.outForDeliveryAt,
+    arrivedAtCustomerAt: delivery.arrivedAtCustomerAt,
     deliveredAt: delivery.deliveredAt,
+    pickupProof: delivery.pickupImageUrl ? { imageUrl: delivery.pickupImageUrl, latitude: delivery.pickupLatitude, longitude: delivery.pickupLongitude, timestamp: delivery.pickupTimestamp } : null,
+    deliveryProof: delivery.deliveryImageUrl ? { imageUrl: delivery.deliveryImageUrl, latitude: delivery.deliveryLatitude, longitude: delivery.deliveryLongitude, timestamp: delivery.deliveryTimestamp } : null,
+    vendorOtpVerified: delivery.vendorOtpVerified,
+    customerOtpVerified: delivery.customerOtpVerified,
   };
 }
 
@@ -720,11 +742,299 @@ export async function updateDeliveryStatus(id: string, newStatus: string, user: 
       await notifyOrderStatusChange(orderForNotify, mappedOrderStatusForNotify);
     }
 
+    // Auto-generate and push customer OTP when partner picks up and goes out for delivery.
+    if (newStatus === DELIVERY_STATUS.OUT_FOR_DELIVERY && orderForNotify) {
+      try {
+        await _generateAndSendCustomerOtp(delivery, orderForNotify);
+      } catch (err) {
+        logger.error({ err, deliveryId: delivery.id }, 'Failed to auto-generate customer OTP on OUT_FOR_DELIVERY');
+      }
+    }
+
     // The partner declined/failed it — offer the order to the next nearest
     // available partner straight away.
     if (revertedForReassignment) {
       await autoAssignDeliveryPartner(delivery.orderId.toString());
     }
+
+    return delivery;
+  } finally {
+    await session.endSession();
+  }
+}
+
+// Internal helper — generates a customer OTP and stores both the plaintext
+// (for display in the customer app) and the hash (for partner verification).
+// No SMS/notification is sent — the customer sees the OTP in their app's
+// order/delivery details screen via GET /deliveries/:id/customer-otp.
+async function _generateAndSendCustomerOtp(delivery: InstanceType<typeof Delivery>, _order: InstanceType<typeof Order>) {
+  const otp = generateOtp();
+  const otpHash = hashOtp(otp, delivery.orderId.toString());
+  await Delivery.updateOne({ _id: delivery._id }, { $set: { customerOtpCode: otp, customerOtpHash: otpHash, customerOtpVerified: false } });
+}
+
+// Generate (or regenerate) the vendor pickup OTP. Returns the plaintext OTP
+// for the vendor to display — only the hash is persisted on the Delivery doc.
+// Callable by VENDOR (owning this order) or ADMIN.
+export async function generateVendorOtp(deliveryId: string, user: JwtPayload): Promise<{ otp: string }> {
+  if (user.userType !== 'VENDOR' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only a vendor or admin can generate the pickup OTP', 'FORBIDDEN');
+  }
+
+  const delivery = await Delivery.findById(deliveryId).select('+vendorOtpCode +vendorOtpHash');
+  if (!delivery) throw ApiError.notFound('Delivery not found', 'DELIVERY_NOT_FOUND');
+  await assertDeliveryAccess(user, delivery);
+
+  if (![DELIVERY_STATUS.ASSIGNED, DELIVERY_STATUS.ARRIVED_AT_VENDOR].includes(delivery.status as typeof DELIVERY_STATUS.ASSIGNED)) {
+    throw ApiError.badRequest('Vendor OTP can only be generated when the delivery is ASSIGNED or ARRIVED_AT_VENDOR', 'INVALID_STATUS');
+  }
+
+  const otp = generateOtp();
+  const otpHash = hashOtp(otp, delivery.orderId.toString());
+  delivery.vendorOtpCode = otp;
+  delivery.vendorOtpHash = otpHash;
+  delivery.vendorOtpVerified = false;
+  await delivery.save();
+
+  // OTP is returned here for immediate display; it is also persisted so the
+  // vendor can re-fetch it from GET /deliveries/:id/vendor-otp anytime.
+  return { otp };
+}
+
+// Returns the current vendor pickup OTP for display in the vendor app.
+// Only accessible to the owning vendor or admin.
+export async function getVendorOtp(deliveryId: string, user: JwtPayload): Promise<{ otp: string | null; verified: boolean }> {
+  if (user.userType !== 'VENDOR' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only a vendor or admin can view the pickup OTP', 'FORBIDDEN');
+  }
+  const delivery = await Delivery.findById(deliveryId).select('+vendorOtpCode +vendorOtpHash');
+  if (!delivery) throw ApiError.notFound('Delivery not found', 'DELIVERY_NOT_FOUND');
+  await assertDeliveryAccess(user, delivery);
+  return { otp: delivery.vendorOtpCode ?? null, verified: delivery.vendorOtpVerified ?? false };
+}
+
+// Returns the current customer delivery OTP for display in the customer app.
+// Only accessible to the owning customer or admin.
+export async function getCustomerOtp(deliveryId: string, user: JwtPayload): Promise<{ otp: string | null; verified: boolean }> {
+  if (user.userType !== 'CUSTOMER' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only a customer or admin can view the delivery OTP', 'FORBIDDEN');
+  }
+  const delivery = await Delivery.findById(deliveryId).select('+customerOtpCode +customerOtpHash');
+  if (!delivery) throw ApiError.notFound('Delivery not found', 'DELIVERY_NOT_FOUND');
+  await assertDeliveryAccess(user, delivery);
+  return { otp: delivery.customerOtpCode ?? null, verified: delivery.customerOtpVerified ?? false };
+}
+
+// Re-generate and resend the customer delivery OTP on demand.
+// Callable by CUSTOMER (owning this order) or ADMIN.
+export async function generateCustomerOtp(deliveryId: string, user: JwtPayload): Promise<void> {
+  if (user.userType !== 'CUSTOMER' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only a customer or admin can regenerate the delivery OTP', 'FORBIDDEN');
+  }
+
+  const delivery = await Delivery.findById(deliveryId).select('+customerOtpHash');
+  if (!delivery) throw ApiError.notFound('Delivery not found', 'DELIVERY_NOT_FOUND');
+  await assertDeliveryAccess(user, delivery);
+
+  if (![DELIVERY_STATUS.OUT_FOR_DELIVERY, DELIVERY_STATUS.ARRIVED_AT_CUSTOMER].includes(delivery.status as typeof DELIVERY_STATUS.OUT_FOR_DELIVERY)) {
+    throw ApiError.badRequest('Customer OTP can only be generated when delivery is OUT_FOR_DELIVERY or ARRIVED_AT_CUSTOMER', 'INVALID_STATUS');
+  }
+
+  const order = await Order.findById(delivery.orderId);
+  if (!order) throw ApiError.notFound('Order not found', 'ORDER_NOT_FOUND');
+
+  await _generateAndSendCustomerOtp(delivery, order);
+}
+
+export interface VerifyPickupOptions {
+  otp: string;
+  imageBuffer: Buffer;
+  latitude: number;
+  longitude: number;
+}
+
+// Delivery partner verifies the vendor OTP at pickup, uploads the package image,
+// and transitions the delivery ARRIVED_AT_VENDOR → PICKED_UP.
+export async function verifyPickup(deliveryId: string, data: VerifyPickupOptions, user: JwtPayload): Promise<IDelivery> {
+  if (user.userType !== 'DELIVERY_PARTNER' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only the delivery partner or admin can verify pickup', 'FORBIDDEN');
+  }
+
+  const delivery = await Delivery.findById(deliveryId).select('+vendorOtpCode +vendorOtpHash');
+  if (!delivery) throw ApiError.notFound('Delivery not found', 'DELIVERY_NOT_FOUND');
+  await assertDeliveryAccess(user, delivery);
+
+  if (delivery.status !== DELIVERY_STATUS.ARRIVED_AT_VENDOR) {
+    throw ApiError.badRequest('Delivery must be in ARRIVED_AT_VENDOR status to verify pickup', 'INVALID_STATUS');
+  }
+  if (!delivery.vendorOtpHash) {
+    throw ApiError.badRequest('Vendor OTP has not been generated yet. Ask the vendor to generate it from their app.', 'OTP_NOT_GENERATED');
+  }
+  if (!verifyOtpHash(data.otp, delivery.orderId.toString(), delivery.vendorOtpHash)) {
+    throw ApiError.badRequest('Invalid vendor OTP', 'INVALID_OTP');
+  }
+
+  const { url: pickupImageUrl, publicId: pickupImagePublicId } = await uploadImageBuffer(data.imageBuffer, 'delivery-pickup-proofs');
+
+  let orderForNotify: InstanceType<typeof Order> | undefined;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const oldStatus = delivery.status;
+      const now = new Date();
+      delivery.status = DELIVERY_STATUS.PICKED_UP;
+      delivery.pickedUpAt = now;
+      delivery.vendorOtpVerified = true;
+      delivery.pickupImageUrl = pickupImageUrl;
+      delivery.pickupImagePublicId = pickupImagePublicId;
+      delivery.pickupLatitude = data.latitude;
+      delivery.pickupLongitude = data.longitude;
+      delivery.pickupTimestamp = now;
+      await delivery.save({ session });
+
+      await DeliveryStatusHistory.create(
+        [{ deliveryId: delivery.id, oldStatus, newStatus: DELIVERY_STATUS.PICKED_UP, latitude: data.latitude, longitude: data.longitude }],
+        { session },
+      );
+
+      const order = await Order.findById(delivery.orderId).session(session);
+      if (!order) throw ApiError.notFound('Order not found', 'ORDER_NOT_FOUND');
+      orderForNotify = order;
+      const oldOrderStatus = order.status;
+      order.status = 'PICKED_UP';
+      await order.save({ session });
+      await OrderStatusHistory.create(
+        [{ orderId: order.id, oldStatus: oldOrderStatus, newStatus: 'PICKED_UP', changedBy: user.userId, changedByType: user.userType }],
+        { session },
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  if (orderForNotify) await notifyOrderStatusChange(orderForNotify, 'PICKED_UP');
+  return delivery;
+}
+
+export interface VerifyDeliveryOptions {
+  otp: string;
+  imageBuffer: Buffer;
+  latitude: number;
+  longitude: number;
+  cashCollected?: boolean;
+}
+
+// Delivery partner verifies the customer OTP at the drop point, uploads the
+// delivery image, and transitions ARRIVED_AT_CUSTOMER → DELIVERED.
+export async function verifyDelivery(deliveryId: string, data: VerifyDeliveryOptions, user: JwtPayload): Promise<IDelivery> {
+  if (user.userType !== 'DELIVERY_PARTNER' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only the delivery partner or admin can verify delivery', 'FORBIDDEN');
+  }
+
+  const delivery = await Delivery.findById(deliveryId).select('+customerOtpCode +customerOtpHash');
+  if (!delivery) throw ApiError.notFound('Delivery not found', 'DELIVERY_NOT_FOUND');
+  await assertDeliveryAccess(user, delivery);
+
+  if (delivery.status !== DELIVERY_STATUS.ARRIVED_AT_CUSTOMER) {
+    throw ApiError.badRequest('Delivery must be in ARRIVED_AT_CUSTOMER status to verify delivery', 'INVALID_STATUS');
+  }
+  if (!delivery.customerOtpHash) {
+    throw ApiError.badRequest('Customer OTP has not been generated yet', 'OTP_NOT_GENERATED');
+  }
+  if (!verifyOtpHash(data.otp, delivery.orderId.toString(), delivery.customerOtpHash)) {
+    throw ApiError.badRequest('Invalid customer OTP', 'INVALID_OTP');
+  }
+
+  // Payment guard (same as updateDeliveryStatus's DELIVERED block).
+  let collectCodPayment = false;
+  const orderCheck = await Order.findById(delivery.orderId);
+  if (!orderCheck) throw ApiError.notFound('Order not found', 'ORDER_NOT_FOUND');
+  const summary = buildPaymentSummary(orderCheck);
+  if (!summary.isPaid) {
+    if (orderCheck.paymentMethod !== PAYMENT_METHODS.COD) {
+      throw ApiError.unprocessable('Payment for this order has not been completed yet', 'PAYMENT_NOT_COMPLETED');
+    }
+    if (!data.cashCollected) {
+      throw ApiError.unprocessable(
+        `Collect ${summary.amountToCollect} in cash and confirm it (cashCollected: true) before marking delivered`,
+        'COD_CASH_NOT_COLLECTED',
+      );
+    }
+    collectCodPayment = true;
+  }
+
+  const { url: deliveryImageUrl, publicId: deliveryImagePublicId } = await uploadImageBuffer(data.imageBuffer, 'delivery-drop-proofs');
+
+  let orderForNotify: InstanceType<typeof Order> | undefined;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const oldStatus = delivery.status;
+      const now = new Date();
+      delivery.status = DELIVERY_STATUS.DELIVERED;
+      delivery.deliveredAt = now;
+      delivery.customerOtpVerified = true;
+      delivery.deliveryImageUrl = deliveryImageUrl;
+      delivery.deliveryImagePublicId = deliveryImagePublicId;
+      delivery.deliveryLatitude = data.latitude;
+      delivery.deliveryLongitude = data.longitude;
+      delivery.deliveryTimestamp = now;
+      await delivery.save({ session });
+
+      await DeliveryStatusHistory.create(
+        [{ deliveryId: delivery.id, oldStatus, newStatus: DELIVERY_STATUS.DELIVERED, latitude: data.latitude, longitude: data.longitude }],
+        { session },
+      );
+
+      const order = await Order.findById(delivery.orderId).session(session);
+      if (!order) throw ApiError.notFound('Order not found', 'ORDER_NOT_FOUND');
+      orderForNotify = order;
+      const oldOrderStatus = order.status;
+      order.status = 'DELIVERED';
+      await order.save({ session });
+      await OrderStatusHistory.create(
+        [{ orderId: order.id, oldStatus: oldOrderStatus, newStatus: 'DELIVERED', changedBy: user.userId, changedByType: user.userType }],
+        { session },
+      );
+
+      if (collectCodPayment) {
+        const [payment] = await Payment.create(
+          [{ orderId: order.id, customerId: order.customerId, amount: order.total, method: PAYMENT_METHODS.COD, status: PAYMENT_STATUS.PAID, paidAt: now }],
+          { session },
+        );
+        order.paymentId = payment._id;
+        order.paymentStatus = PAYMENT_STATUS.PAID;
+        await order.save({ session });
+        await ledgerService.recordTransaction(
+          { orderId: order.id, vendorId: order.vendorId?.toString(), storeId: order.storeId?.toString(), type: TRANSACTION_TYPE.ORDER_PAYMENT, amount: order.total, direction: TRANSACTION_DIRECTION.CREDIT },
+          session,
+        );
+      }
+
+      const partner = await DeliveryPartner.findById(delivery.deliveryPartnerId).session(session);
+      if (partner) {
+        partner.availability = DELIVERY_PARTNER_AVAILABILITY.ONLINE;
+        partner.currentOrderId = undefined;
+        partner.totalOrders += 1;
+        partner.completedOrders += 1;
+        await partner.save({ session });
+
+        await ledgerService.recordOrderCommissionLedger(order, session);
+        const earning = delivery.partnerEarning ?? order.deliveryFee;
+        if (earning > 0) {
+          await ledgerService.recordTransaction(
+            { orderId: order.id, deliveryPartnerId: partner.id, type: TRANSACTION_TYPE.DELIVERY_EARNING, amount: earning, direction: TRANSACTION_DIRECTION.CREDIT },
+            session,
+          );
+        }
+      }
+    });
+
+    const partner = await DeliveryPartner.findById(delivery.deliveryPartnerId);
+    if (partner && partner.availability === DELIVERY_PARTNER_AVAILABILITY.ONLINE && partner.currentLatitude !== undefined && partner.currentLongitude !== undefined) {
+      await markPartnerActive(partner.locationId.toString(), partner.id, partner.currentLongitude, partner.currentLatitude);
+    }
+    if (orderForNotify) await notifyOrderStatusChange(orderForNotify, 'DELIVERED');
 
     return delivery;
   } finally {

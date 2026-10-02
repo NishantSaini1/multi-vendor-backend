@@ -15,11 +15,31 @@ export interface IDelivery extends Document {
   dropLocation: IDeliveryPoint;
   status: string;
   assignedAt?: Date;
-  acceptedAt?: Date;
-  arrivedAtPickupAt?: Date;
+  arrivedAtVendorAt?: Date;
   pickedUpAt?: Date;
   outForDeliveryAt?: Date;
+  arrivedAtCustomerAt?: Date;
   deliveredAt?: Date;
+  // Pickup proof: captured when partner verifies vendor OTP at the pickup point.
+  pickupImageUrl?: string;
+  pickupImagePublicId?: string;
+  pickupLatitude?: number;
+  pickupLongitude?: number;
+  pickupTimestamp?: Date;
+  // Delivery proof: captured when partner verifies customer OTP at drop point.
+  deliveryImageUrl?: string;
+  deliveryImagePublicId?: string;
+  deliveryLatitude?: number;
+  deliveryLongitude?: number;
+  deliveryTimestamp?: Date;
+  // OTP verification state — plaintext codes are stored for display in the
+  // vendor/customer app (select:false); hashes are used for verification.
+  vendorOtpCode?: string;
+  vendorOtpHash?: string;
+  vendorOtpVerified?: boolean;
+  customerOtpCode?: string;
+  customerOtpHash?: string;
+  customerOtpVerified?: boolean;
   estimatedTime?: number;
   distance?: number;
   // Snapshotted at assignment time (assignDeliveryPartner) from the order's
@@ -55,11 +75,27 @@ const deliverySchema = new Schema<IDelivery>(
     dropLocation: { type: deliveryPointSchema, required: true },
     status: { type: String, enum: Object.values(DELIVERY_STATUS), default: DELIVERY_STATUS.ASSIGNED, index: true },
     assignedAt: { type: Date },
-    acceptedAt: { type: Date },
-    arrivedAtPickupAt: { type: Date },
+    arrivedAtVendorAt: { type: Date },
     pickedUpAt: { type: Date },
     outForDeliveryAt: { type: Date },
+    arrivedAtCustomerAt: { type: Date },
     deliveredAt: { type: Date },
+    pickupImageUrl: { type: String },
+    pickupImagePublicId: { type: String },
+    pickupLatitude: { type: Number },
+    pickupLongitude: { type: Number },
+    pickupTimestamp: { type: Date },
+    deliveryImageUrl: { type: String },
+    deliveryImagePublicId: { type: String },
+    deliveryLatitude: { type: Number },
+    deliveryLongitude: { type: Number },
+    deliveryTimestamp: { type: Date },
+    vendorOtpCode: { type: String, select: false },
+    vendorOtpHash: { type: String, select: false },
+    vendorOtpVerified: { type: Boolean, default: false },
+    customerOtpCode: { type: String, select: false },
+    customerOtpHash: { type: String, select: false },
+    customerOtpVerified: { type: Boolean, default: false },
     estimatedTime: { type: Number },
     distance: { type: Number },
     deliveryFee: { type: Number, min: 0 },

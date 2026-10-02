@@ -1,5 +1,5 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { VENDOR_STATUS, APPROVAL_STATUS, DAYS_OF_WEEK } from '../constants/enums';
+import { VENDOR_STATUS, APPROVAL_STATUS, DAYS_OF_WEEK, PRICING_MODELS, DISCOUNT_TYPES } from '../constants/enums';
 import { hidePasswordInJson } from '../utils/schemaSecurity';
 
 export interface IVendorTemporaryClosure {
@@ -45,6 +45,12 @@ export interface IVendor extends Document {
   ratingCount: number;
   status: string;
   approvalStatus: string;
+  // Pricing model (see PRICING_MODELS) — COMMISSION by default. markupType/
+  // markupValue only apply when pricingModel is MARKUP: the platform adds this
+  // % (or flat amount per unit) on top of the vendor's price for customers.
+  pricingModel: string;
+  markupType: string;
+  markupValue: number;
   isOpen: boolean;
   temporaryClosure?: IVendorTemporaryClosure | null;
   businessHours?: IVendorBusinessHours;
@@ -100,6 +106,9 @@ const vendorSchema = new Schema<IVendor>(
     ratingCount: { type: Number, default: 0 },
     status: { type: String, enum: Object.values(VENDOR_STATUS), default: VENDOR_STATUS.ACTIVE },
     approvalStatus: { type: String, enum: Object.values(APPROVAL_STATUS), default: APPROVAL_STATUS.PENDING },
+    pricingModel: { type: String, enum: Object.values(PRICING_MODELS), default: PRICING_MODELS.COMMISSION },
+    markupType: { type: String, enum: Object.values(DISCOUNT_TYPES), default: DISCOUNT_TYPES.PERCENTAGE },
+    markupValue: { type: Number, default: 0, min: 0 },
     isOpen: { type: Boolean, default: false },
     temporaryClosure: {
       type: new Schema<IVendorTemporaryClosure>({ reopensAt: { type: Date }, reason: { type: String } }, { _id: false }),

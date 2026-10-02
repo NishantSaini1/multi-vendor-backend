@@ -60,6 +60,7 @@
     "pino-pretty": "^13.0.0",
     "rate-limit-redis": "^4.2.0",
     "razorpay": "^2.9.5",
+    "sharp": "^0.35.5",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "typescript": "^5.6.3",
@@ -69,6 +70,7 @@
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",
+    "@types/sharp": "^0.31.1",
     "@types/supertest": "^6.0.2",
     "@typescript-eslint/eslint-plugin": "^8.14.0",
     "@typescript-eslint/parser": "^8.14.0",

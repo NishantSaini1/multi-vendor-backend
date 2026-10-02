@@ -10,17 +10,35 @@ export const deliveryIdParamSchema = z.object({
 export const updateDeliveryStatusSchema = z.object({
   params: z.object({ id: objectId }),
   body: z.object({
+    // PICKED_UP and DELIVERED are intentionally excluded — they require
+    // OTP + image proof via the verify-pickup / verify-delivery endpoints.
     status: z.enum([
-      DELIVERY_STATUS.ACCEPTED,
-      DELIVERY_STATUS.ARRIVED_AT_PICKUP,
-      DELIVERY_STATUS.PICKED_UP,
+      DELIVERY_STATUS.ARRIVED_AT_VENDOR,
       DELIVERY_STATUS.OUT_FOR_DELIVERY,
-      DELIVERY_STATUS.DELIVERED,
+      DELIVERY_STATUS.ARRIVED_AT_CUSTOMER,
       DELIVERY_STATUS.CANCELLED,
       DELIVERY_STATUS.FAILED,
     ]),
-    // COD only, with status DELIVERED: confirms the cash was collected.
     cashCollected: z.boolean().optional(),
+  }),
+});
+
+export const verifyPickupSchema = z.object({
+  params: z.object({ id: objectId }),
+  body: z.object({
+    otp: z.string().min(4).max(8),
+    latitude: z.string().regex(/^-?\d+(\.\d+)?$/),
+    longitude: z.string().regex(/^-?\d+(\.\d+)?$/),
+  }),
+});
+
+export const verifyDeliverySchema = z.object({
+  params: z.object({ id: objectId }),
+  body: z.object({
+    otp: z.string().min(4).max(8),
+    latitude: z.string().regex(/^-?\d+(\.\d+)?$/),
+    longitude: z.string().regex(/^-?\d+(\.\d+)?$/),
+    cashCollected: z.union([z.boolean(), z.literal('true'), z.literal('false')]).optional(),
   }),
 });
 

@@ -16,6 +16,9 @@ export interface ISettlement extends Document {
   periodEnd: Date;
   grossAmount: number;
   commissionAmount: number;
+  // Platform markup withheld on MARKUP-model orders (customer price minus the
+  // vendor's original price) — a separate deduction from commissionAmount.
+  markupAmount: number;
   adjustments: number;
   netAmount: number;
   status: string;
@@ -35,6 +38,7 @@ const settlementSchema = new Schema<ISettlement>(
     periodEnd: { type: Date, required: true },
     grossAmount: { type: Number, required: true, default: 0 },
     commissionAmount: { type: Number, required: true, default: 0 },
+    markupAmount: { type: Number, required: true, default: 0 },
     adjustments: { type: Number, default: 0 },
     netAmount: { type: Number, required: true, default: 0 },
     status: { type: String, enum: Object.values(SETTLEMENT_STATUS), default: SETTLEMENT_STATUS.PENDING },

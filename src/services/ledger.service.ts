@@ -2,7 +2,7 @@ import { ClientSession } from 'mongoose';
 import { Transaction } from '../models/Transaction';
 import { ApiError } from '../utils/ApiError';
 import { PaginationParams } from '../utils/pagination';
-import { TRANSACTION_STATUS, TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
+import { TRANSACTION_STATUS, TRANSACTION_TYPE, TRANSACTION_DIRECTION, PRICING_MODELS } from '../constants/enums';
 
 interface RecordTransactionInput {
   orderId?: string;
@@ -66,18 +66,26 @@ export async function recordOrderCommissionLedger(
     vendorId?: { toString(): string } | string;
     storeId?: { toString(): string } | string;
     commissionAmount?: number;
+    pricingModel?: string;
+    markupAmount?: number;
   },
   session?: ClientSession,
 ): Promise<void> {
-  if (!order.commissionAmount) return;
+  // A MARKUP-model order has no commission but the same shape of entry: its
+  // markupAmount (the part of the customer's price above the vendor's original
+  // price) is withheld from the vendor as VENDOR_MARKUP and credited to the
+  // platform as PLATFORM_FEE, so settlement and platform revenue both see it.
+  const isMarkup = order.pricingModel === PRICING_MODELS.MARKUP;
+  const amount = isMarkup ? order.markupAmount : order.commissionAmount;
+  if (!amount || amount <= 0) return;
 
   await recordTransaction(
     {
       orderId: order.id,
       vendorId: order.vendorId?.toString(),
       storeId: order.storeId?.toString(),
-      type: TRANSACTION_TYPE.VENDOR_COMMISSION,
-      amount: order.commissionAmount,
+      type: isMarkup ? TRANSACTION_TYPE.VENDOR_MARKUP : TRANSACTION_TYPE.VENDOR_COMMISSION,
+      amount,
       direction: TRANSACTION_DIRECTION.DEBIT,
     },
     session,
@@ -86,8 +94,9 @@ export async function recordOrderCommissionLedger(
     {
       orderId: order.id,
       type: TRANSACTION_TYPE.PLATFORM_FEE,
-      amount: order.commissionAmount,
+      amount,
       direction: TRANSACTION_DIRECTION.CREDIT,
+      metadata: { source: isMarkup ? PRICING_MODELS.MARKUP : PRICING_MODELS.COMMISSION },
     },
     session,
   );

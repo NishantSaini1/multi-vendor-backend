@@ -1,5 +1,5 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { STORE_STATUS, STORE_APPROVAL_STATUS } from '../constants/enums';
+import { STORE_STATUS, STORE_APPROVAL_STATUS, PRICING_MODELS, DISCOUNT_TYPES } from '../constants/enums';
 import { hidePasswordInJson } from '../utils/schemaSecurity';
 
 export interface IStore extends Document {
@@ -33,6 +33,12 @@ export interface IStore extends Document {
   // Onboarding/approval workflow — see STORE_APPROVAL_STATUS. Separate from
   // `status`, which is the operational open/closed-for-business signal.
   approvalStatus: string;
+  // Pricing model (see PRICING_MODELS) — COMMISSION by default. markupType/
+  // markupValue only apply when pricingModel is MARKUP: the platform adds this
+  // % (or flat amount per unit) on top of the store's price for customers.
+  pricingModel: string;
+  markupType: string;
+  markupValue: number;
   openingTime: string;
   closingTime: string;
   rating: number;
@@ -65,6 +71,9 @@ const storeSchema = new Schema<IStore>(
     serviceRadius: { type: Number, default: 5, min: 0 },
     status: { type: String, enum: Object.values(STORE_STATUS), default: STORE_STATUS.ACTIVE },
     approvalStatus: { type: String, enum: Object.values(STORE_APPROVAL_STATUS), default: STORE_APPROVAL_STATUS.PENDING },
+    pricingModel: { type: String, enum: Object.values(PRICING_MODELS), default: PRICING_MODELS.COMMISSION },
+    markupType: { type: String, enum: Object.values(DISCOUNT_TYPES), default: DISCOUNT_TYPES.PERCENTAGE },
+    markupValue: { type: Number, default: 0, min: 0 },
     openingTime: { type: String, default: '09:00' },
     closingTime: { type: String, default: '22:00' },
     rating: { type: Number, default: 0 },

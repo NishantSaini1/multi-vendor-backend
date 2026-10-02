@@ -96,6 +96,16 @@ export const PROMOTION_OWNER_TYPES = {
   STORE: 'STORE',
 } as const;
 
+// How a vendor/store pays the platform. COMMISSION: sells at its own price and
+// the platform keeps a commission % of each order. MARKUP: no commission — the
+// platform lists the products at a higher price and keeps the difference
+// (customer price - vendor's original price); the vendor is settled their
+// original price in full. Stored on Vendor/Store; snapshotted onto each Order.
+export const PRICING_MODELS = {
+  COMMISSION: 'COMMISSION',
+  MARKUP: 'MARKUP',
+} as const;
+
 export const COMMISSION_LEVELS = {
   GLOBAL: 'GLOBAL',
   LOCATION: 'LOCATION',
@@ -211,6 +221,7 @@ export const DAYS_OF_WEEK = {
 export const TRANSACTION_TYPE = {
   ORDER_PAYMENT: 'ORDER_PAYMENT',
   VENDOR_COMMISSION: 'VENDOR_COMMISSION',
+  VENDOR_MARKUP: 'VENDOR_MARKUP',
   DELIVERY_EARNING: 'DELIVERY_EARNING',
   PLATFORM_FEE: 'PLATFORM_FEE',
   REFUND: 'REFUND',

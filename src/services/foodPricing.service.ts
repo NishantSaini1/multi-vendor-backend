@@ -5,6 +5,7 @@ import { ModifierGroup } from '../models/ModifierGroup';
 import { ModifierOption } from '../models/ModifierOption';
 import { IOrderItemModifier } from '../models/OrderItem';
 import { ApiError } from '../utils/ApiError';
+import { customerModifierPrice, customerUnitPrice, loadPricingConfig, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
 import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 // Single source of truth for "resolve + validate + price one Food line item"
@@ -13,14 +14,22 @@ import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY 
 // exact same rules apply everywhere a Food line item's price is ever
 // determined. Never trust a client-supplied price/name — everything here is
 // read fresh from the DB.
+//
+// Under the MARKUP pricing model (see pricing.service.ts) `unitPrice`/
+// `modifiersUnitTotal`/`modifiers[].price` are what the CUSTOMER pays (vendor
+// price + markup) — cart and checkout use them as-is — while the
+// `vendor*` fields keep the vendor's own original prices for settlement.
+// Under COMMISSION the two are identical.
 export interface ResolvedFoodLineItem {
   vendorFoodItem: IVendorFoodItem;
   globalItem: IFoodProduct;
   variant?: IFoodVariant;
   name: string;
   unitPrice: number;
+  vendorUnitPrice: number;
   modifiers: IOrderItemModifier[];
   modifiersUnitTotal: number;
+  vendorModifiersUnitTotal: number;
 }
 
 // Generic per-line price math shared by Food AND Instamart order lines
@@ -47,12 +56,14 @@ export function computeLine(unitPrice: number, quantity: number, discountPct: nu
 export async function resolveModifierSelections(
   vendorFoodItemId: string,
   selections: { modifierOptionId: string; quantity: number }[],
-): Promise<{ snapshots: IOrderItemModifier[]; unitTotal: number }> {
+  pricing: PricingConfig = DEFAULT_PRICING_CONFIG,
+): Promise<{ snapshots: IOrderItemModifier[]; unitTotal: number; vendorUnitTotal: number }> {
   const allGroups = await ModifierGroup.find({ vendorFoodItemId, status: GENERIC_STATUS.ACTIVE });
   const groupById = new Map(allGroups.map((g) => [g.id, g]));
 
   const snapshots: IOrderItemModifier[] = [];
   let unitTotal = 0;
+  let vendorUnitTotal = 0;
   const selectedCountByGroup = new Map<string, number>();
 
   if (selections.length > 0) {
@@ -68,12 +79,14 @@ export async function resolveModifierSelections(
       }
 
       selectedCountByGroup.set(group.id, (selectedCountByGroup.get(group.id) ?? 0) + selection.quantity);
-      unitTotal += option.price * selection.quantity;
+      const customerOptionPrice = customerModifierPrice(option.price, pricing);
+      unitTotal += customerOptionPrice * selection.quantity;
+      vendorUnitTotal += option.price * selection.quantity;
       snapshots.push({
         modifierGroupId: group._id,
         modifierOptionId: option._id,
         name: option.name,
-        price: option.price,
+        price: customerOptionPrice,
         quantity: selection.quantity,
       });
     }
@@ -92,7 +105,7 @@ export async function resolveModifierSelections(
     }
   }
 
-  return { snapshots, unitTotal };
+  return { snapshots, unitTotal, vendorUnitTotal };
 }
 
 // Resolves, validates, and prices ONE Food order/cart line from scratch.
@@ -128,7 +141,7 @@ export async function resolveFoodLineItem(
     throw ApiError.unprocessable('This item is not currently available', 'PRODUCT_NOT_AVAILABLE');
   }
 
-  let unitPrice = vendorFoodItem.price;
+  let vendorUnitPrice = vendorFoodItem.price;
   let variant: IFoodVariant | undefined;
   if (input.variantId) {
     const found = await FoodVariant.findById(input.variantId);
@@ -139,13 +152,27 @@ export async function resolveFoodLineItem(
       throw ApiError.unprocessable(`${globalItem.name} (${found.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
     }
     variant = found;
-    unitPrice = found.price;
+    vendorUnitPrice = found.price;
   }
 
-  const { snapshots: modifiers, unitTotal: modifiersUnitTotal } = await resolveModifierSelections(
-    vendorFoodItem.id,
-    input.modifiers,
-  );
+  const pricing = await loadPricingConfig('VENDOR', vendorFoodItem.vendorId.toString());
+  const unitPrice = customerUnitPrice(vendorUnitPrice, pricing);
 
-  return { vendorFoodItem, globalItem, variant, name: globalItem.name, unitPrice, modifiers, modifiersUnitTotal };
+  const {
+    snapshots: modifiers,
+    unitTotal: modifiersUnitTotal,
+    vendorUnitTotal: vendorModifiersUnitTotal,
+  } = await resolveModifierSelections(vendorFoodItem.id, input.modifiers, pricing);
+
+  return {
+    vendorFoodItem,
+    globalItem,
+    variant,
+    name: globalItem.name,
+    unitPrice,
+    vendorUnitPrice,
+    modifiers,
+    modifiersUnitTotal,
+    vendorModifiersUnitTotal,
+  };
 }

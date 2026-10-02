@@ -25,7 +25,12 @@ export interface IOrderItem extends Document {
   productId: Types.ObjectId;
   variantId?: Types.ObjectId;
   name: string;
+  // What the customer paid per unit. Under the MARKUP pricing model this is
+  // the vendor's price plus the platform markup; vendorPrice is the vendor's
+  // own original unit price (equal to `price` under COMMISSION, and absent on
+  // orders placed before pricing models existed).
   price: number;
+  vendorPrice?: number;
   quantity: number;
   modifiers: IOrderItemModifier[];
   itemTotal: number;
@@ -51,6 +56,7 @@ const orderItemSchema = new Schema<IOrderItem>(
     variantId: { type: Schema.Types.ObjectId },
     name: { type: String, required: true },
     price: { type: Number, required: true, min: 0 },
+    vendorPrice: { type: Number, min: 0 },
     quantity: { type: Number, required: true, min: 1 },
     modifiers: { type: [orderItemModifierSchema], default: [] },
     itemTotal: { type: Number, required: true, min: 0 },

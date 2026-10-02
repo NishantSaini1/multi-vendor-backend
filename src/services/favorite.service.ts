@@ -4,6 +4,7 @@ import { Vendor } from '../models/Vendor';
 import { Store } from '../models/Store';
 import { VendorFoodItem } from '../models/VendorFoodItem';
 import { InstamartProduct } from '../models/InstamartProduct';
+import { DEFAULT_PRICING_CONFIG, loadPricingConfigs, markupFoodItem, markupMartListing } from './pricing.service';
 
 export interface FavoriteInput {
   type: string;
@@ -31,6 +32,12 @@ export async function listFavorites(customerId: string) {
     VendorFoodItem.find({ _id: { $in: ids(FAVORITE_TYPES.PRODUCT, 'FOOD') } }).select('price mrp availabilityStatus status vendorId').lean(),
     InstamartProduct.find({ _id: { $in: ids(FAVORITE_TYPES.PRODUCT, 'INSTAMART') } }).select('sellingPrice mrp status storeId').lean(),
   ]);
+  // Favorites show the live price a customer would pay, so apply each
+  // seller's pricing model (MARKUP adds the platform markup).
+  const [vendorPricing, storePricing] = await Promise.all([
+    loadPricingConfigs('VENDOR', foodItems.map((p) => String(p.vendorId))),
+    loadPricingConfigs('STORE', martItems.map((p) => String(p.storeId))),
+  ]);
   const byId = <T extends { _id: unknown }>(rows: T[]) => new Map(rows.map((r) => [String(r._id), r]));
   const vMap = byId(vendors);
   const sMap = byId(stores);
@@ -48,10 +55,16 @@ export async function listFavorites(customerId: string) {
       if (s) live = { exists: true, name: s.name, image: s.logo, rating: s.rating, isOpen: s.status === 'ACTIVE', openingTime: s.openingTime, closingTime: s.closingTime };
     } else if ((f.meta?.businessType ?? 'FOOD') === 'FOOD') {
       const p = fMap.get(id) as Record<string, unknown> | undefined;
-      if (p) live = { exists: true, price: p.price, mrp: p.mrp, available: p.availabilityStatus === 'AVAILABLE' && p.status === 'ACTIVE', vendorId: String(p.vendorId) };
+      if (p) {
+        const shown = markupFoodItem({ price: p.price as number, mrp: p.mrp as number | undefined }, vendorPricing.get(String(p.vendorId)) ?? DEFAULT_PRICING_CONFIG);
+        live = { exists: true, price: shown.price, mrp: shown.mrp, available: p.availabilityStatus === 'AVAILABLE' && p.status === 'ACTIVE', vendorId: String(p.vendorId) };
+      }
     } else {
       const p = mMap.get(id) as Record<string, unknown> | undefined;
-      if (p) live = { exists: true, price: p.sellingPrice, mrp: p.mrp, available: p.status === 'ACTIVE', storeId: String(p.storeId) };
+      if (p) {
+        const shown = markupMartListing({ sellingPrice: p.sellingPrice as number }, storePricing.get(String(p.storeId)) ?? DEFAULT_PRICING_CONFIG);
+        live = { exists: true, price: shown.sellingPrice, mrp: p.mrp, available: p.status === 'ACTIVE', storeId: String(p.storeId) };
+      }
     }
     return { ...f, id: String(f._id), targetId: id, live };
   });

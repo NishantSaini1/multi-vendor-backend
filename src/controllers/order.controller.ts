@@ -4,6 +4,7 @@ import { sendSuccess, buildPagination } from '../utils/ApiResponse';
 import { parsePagination } from '../utils/pagination';
 import { ApiError } from '../utils/ApiError';
 import * as orderService from '../services/order.service';
+import { redactPricingForViewer } from '../services/pricing.service';
 
 function requireUser(req: Request) {
   if (!req.user) throw ApiError.unauthorized();
@@ -34,33 +35,37 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   }
 
   const { items, total } = await orderService.listOrders(filter, pagination);
-  sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
+  sendSuccess(res, redactPricingForViewer(items, user.userType), 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });
 
 export const create = catchAsync(async (req: Request, res: Response) => {
   const user = requireUser(req);
   const order = await orderService.createOrder(user.userId, req.body);
-  sendSuccess(res, order, 'Order created successfully', 201);
+  sendSuccess(res, redactPricingForViewer(order, user.userType), 'Order created successfully', 201);
 });
 
 export const getById = catchAsync(async (req: Request, res: Response) => {
-  const order = await orderService.getOrderById(req.params.id, requireUser(req));
-  sendSuccess(res, order);
+  const user = requireUser(req);
+  const order = await orderService.getOrderById(req.params.id, user);
+  sendSuccess(res, redactPricingForViewer(order, user.userType));
 });
 
 export const update = catchAsync(async (req: Request, res: Response) => {
-  const order = await orderService.updateOrder(req.params.id, req.body, requireUser(req));
-  sendSuccess(res, order, 'Order updated successfully');
+  const user = requireUser(req);
+  const order = await orderService.updateOrder(req.params.id, req.body, user);
+  sendSuccess(res, redactPricingForViewer(order, user.userType), 'Order updated successfully');
 });
 
 export const updateStatus = catchAsync(async (req: Request, res: Response) => {
-  const order = await orderService.updateOrderStatus(req.params.id, req.body.status, requireUser(req));
-  sendSuccess(res, order, 'Order status updated');
+  const user = requireUser(req);
+  const order = await orderService.updateOrderStatus(req.params.id, req.body.status, user);
+  sendSuccess(res, redactPricingForViewer(order, user.userType), 'Order status updated');
 });
 
 export const cancel = catchAsync(async (req: Request, res: Response) => {
-  const order = await orderService.cancelOrder(req.params.id, req.body.reason, requireUser(req));
-  sendSuccess(res, order, 'Order cancelled successfully');
+  const user = requireUser(req);
+  const order = await orderService.cancelOrder(req.params.id, req.body.reason, user);
+  sendSuccess(res, redactPricingForViewer(order, user.userType), 'Order cancelled successfully');
 });
 
 export const timeline = catchAsync(async (req: Request, res: Response) => {
@@ -69,6 +74,7 @@ export const timeline = catchAsync(async (req: Request, res: Response) => {
 });
 
 export const items = catchAsync(async (req: Request, res: Response) => {
-  const orderItems = await orderService.getOrderItems(req.params.id, requireUser(req));
-  sendSuccess(res, orderItems);
+  const user = requireUser(req);
+  const orderItems = await orderService.getOrderItems(req.params.id, user);
+  sendSuccess(res, redactPricingForViewer(orderItems, user.userType));
 });

@@ -10,6 +10,7 @@ import { JwtPayload } from '../utils/jwt';
 import { assertOwnerOrLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { APPROVAL_STATUS, GENERIC_STATUS } from '../constants/enums';
 import { assertCategoryAndSubcategory } from './instamartGlobalProduct.service';
+import { loadPricingConfig, markupMartListing, markupMartListings, markupMartVariant } from './pricing.service';
 
 export function instamartProductListFilter(user: JwtPayload): Record<string, unknown> {
   if (user.userType === 'STORE') return { storeId: user.userId };
@@ -217,6 +218,11 @@ export async function listInstamartProducts(filter: Record<string, unknown>, pag
     enriched = enriched.filter((p) => globalProductVisible((p.product as IInstamartGlobalProduct | undefined) ?? null));
   }
   enriched = await withStores(enriched, (p) => (p.storeId as mongoose.Types.ObjectId).toString());
+  // A customer sees the price they'd pay — marked up under the MARKUP pricing
+  // model (see pricing.service.ts); store/admin views keep the store's price.
+  if (user.userType === 'CUSTOMER') {
+    enriched = await markupMartListings(enriched, (p) => (p.storeId as mongoose.Types.ObjectId).toString());
+  }
   return { items: enriched, total };
 }
 
@@ -321,7 +327,8 @@ export async function getInstamartProductById(id: string, user: JwtPayload) {
     if (product.status !== GENERIC_STATUS.ACTIVE || !enriched || !globalProductVisible(enriched.product as IInstamartGlobalProduct)) {
       throw ApiError.notFound('Instamart product not found', 'INSTAMART_PRODUCT_NOT_FOUND');
     }
-    return withStore(enriched, product.storeId);
+    const withStoreInfo = await withStore(enriched, product.storeId);
+    return markupMartListing(withStoreInfo, await loadPricingConfig('STORE', product.storeId.toString()));
   }
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
   if (!enriched) throw ApiError.notFound('Instamart product not found', 'INSTAMART_PRODUCT_NOT_FOUND');
@@ -374,7 +381,10 @@ export async function updateInstamartProductStatus(id: string, status: string, u
 export async function listInstamartVariants(productId: string, user: JwtPayload) {
   const product = await findProductOrThrow(productId);
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
-  return InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
+  const variants = await InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
+  if (user.userType !== 'CUSTOMER') return variants;
+  const pricing = await loadPricingConfig('STORE', product.storeId.toString());
+  return variants.map((variant) => markupMartVariant(variant.toJSON() as Record<string, unknown>, pricing));
 }
 
 export async function createInstamartVariant(productId: string, data: Record<string, unknown>, user: JwtPayload) {
