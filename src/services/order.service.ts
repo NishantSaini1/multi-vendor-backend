@@ -299,10 +299,11 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   if (!location || location.status !== GENERIC_STATUS.ACTIVE) {
     throw ApiError.unprocessable('This location is not currently serviceable', 'LOCATION_NOT_ACTIVE');
   }
-  const zone = serviceability.deliveryZone as { deliveryFee: number; freeDeliveryAbove: number; estimatedDeliveryTime: number };
+  const zone = serviceability.deliveryZone as { deliveryFee: number; perKmCharge: number; freeDeliveryAbove: number; estimatedDeliveryTime: number };
 
   let vendorId: string | undefined;
   let storeId: string | undefined;
+  let deliveryDistanceKm = 0;
 
   if (businessType === BUSINESS_TYPES.FOOD) {
     const vendor = await Vendor.findById(vendorIdInput);
@@ -324,6 +325,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       );
     }
     vendorId = vendor.id;
+    deliveryDistanceKm = distanceKm;
   } else {
     const store = await Store.findById(data.storeId);
     if (!store) throw ApiError.notFound('Store not found', 'STORE_NOT_FOUND');
@@ -341,6 +343,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       );
     }
     storeId = store.id;
+    deliveryDistanceKm = storeDistanceKm;
   }
 
   const preparedItems =
@@ -349,7 +352,9 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   const subtotal = preparedItems.reduce((sum, i) => sum + i.lineSubtotal, 0);
   const discount = preparedItems.reduce((sum, i) => sum + i.lineDiscount, 0);
   const tax = preparedItems.reduce((sum, i) => sum + i.lineTax, 0);
-  const deliveryFee = subtotal >= zone.freeDeliveryAbove ? 0 : zone.deliveryFee;
+  // Dynamic delivery fee: fixed base + (actual distance × per-km rate), waived above the free-delivery threshold.
+  const baseDeliveryFee = Math.round((zone.deliveryFee + deliveryDistanceKm * (zone.perKmCharge ?? 0)) * 100) / 100;
+  const deliveryFee = subtotal >= zone.freeDeliveryAbove ? 0 : baseDeliveryFee;
   const packagingFee = 0;
   const platformFee = 0;
 

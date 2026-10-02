@@ -126,7 +126,9 @@ export async function checkServiceability(
     if (vendor.locationId?.toString() !== location.id || sellerDistanceKm > sellerServiceRadiusKm) {
       return { serviceable: false, ...base, reason: 'OUT_OF_SELLER_RANGE', sellerDistanceKm, sellerServiceRadiusKm };
     }
-    return { serviceable: true, ...base, sellerDistanceKm, sellerServiceRadiusKm };
+    // Compute dynamic fee: fixed base + (actual distance × per-km rate).
+    const dynamicFee = Math.round((zone.deliveryFee + sellerDistanceKm * (zone.perKmCharge ?? 0)) * 100) / 100;
+    return { serviceable: true, ...base, deliveryFee: dynamicFee, sellerDistanceKm, sellerServiceRadiusKm };
   }
   if (businessType === BUSINESS_TYPES.INSTAMART && seller.storeId) {
     // Same rule as a restaurant: same location, and the address within the
@@ -140,7 +142,9 @@ export async function checkServiceability(
     if (store.locationId?.toString() !== location.id || sellerDistanceKm > sellerServiceRadiusKm) {
       return { serviceable: false, ...base, reason: 'OUT_OF_SELLER_RANGE', sellerDistanceKm, sellerServiceRadiusKm };
     }
-    return { serviceable: true, ...base, sellerDistanceKm, sellerServiceRadiusKm };
+    // Compute dynamic fee: fixed base + (actual distance × per-km rate).
+    const dynamicFee = Math.round((zone.deliveryFee + sellerDistanceKm * (zone.perKmCharge ?? 0)) * 100) / 100;
+    return { serviceable: true, ...base, deliveryFee: dynamicFee, sellerDistanceKm, sellerServiceRadiusKm };
   }
 
   return { serviceable: true, ...base };

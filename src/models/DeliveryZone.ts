@@ -10,6 +10,7 @@ export interface IDeliveryZone extends Document {
   centerLongitude?: number;
   radius?: number;
   deliveryFee: number;
+  perKmCharge: number;
   freeDeliveryAbove: number;
   maxDistance: number;
   estimatedDeliveryTime: number;
@@ -30,6 +31,7 @@ const deliveryZoneSchema = new Schema<IDeliveryZone>(
     centerLongitude: { type: Number },
     radius: { type: Number },
     deliveryFee: { type: Number, required: true, default: 0 },
+    perKmCharge: { type: Number, default: 0 },
     freeDeliveryAbove: { type: Number, default: 0 },
     maxDistance: { type: Number, default: 10 },
     estimatedDeliveryTime: { type: Number, default: 30 },
