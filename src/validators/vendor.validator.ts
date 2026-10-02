@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { phoneSchema, passwordSchema } from './auth.validator';
-import { VENDOR_STATUS, APPROVAL_STATUS, DISCOUNT_TYPES, DAYS_OF_WEEK } from '../constants/enums';
+import { VENDOR_STATUS, APPROVAL_STATUS, DISCOUNT_TYPES, DAYS_OF_WEEK, PRICING_MODELS } from '../constants/enums';
 
 const objectId = z.string().length(24);
 
@@ -40,6 +40,11 @@ export const createVendorSchema = z.object({
     // created for this vendor in the same step (see vendor.service.ts).
     commissionType: z.enum(Object.values(DISCOUNT_TYPES) as [string, ...string[]]).optional(),
     commissionValue: z.number().min(0).optional(),
+    // Pricing model for everything this vendor sells, and — for COMMISSION —
+    // the percentage the platform keeps. Admin-set; a vendor editing its own
+    // profile can change pricingModel only (see vendor.service.ts).
+    pricingModel: z.enum(Object.values(PRICING_MODELS) as [string, ...string[]]).optional(),
+    commissionPercent: z.number().min(0).max(100).optional(),
   }),
 });
 

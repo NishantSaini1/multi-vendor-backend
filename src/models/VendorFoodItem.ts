@@ -11,7 +11,17 @@ export interface IVendorFoodItem extends Document {
   _id: Types.ObjectId;
   vendorId: Types.ObjectId;
   globalFoodItemId: Types.ObjectId;
+  // The vendor's own (original) price for this item.
   price: number;
+  // MARKUP pricing model: what the platform lists this item at for customers,
+  // and the difference from the seller's own price (markupAmount =
+  // platformSellingPrice - the seller's original price). Kept in sync by
+  // pricing.service; when platformPriceManual is true an admin has fixed the
+  // platform price by hand, otherwise it follows the seller's default markup.
+  // Unused (markup 0) for COMMISSION sellers.
+  platformSellingPrice?: number;
+  markupAmount: number;
+  platformPriceManual: boolean;
   mrp?: number;
   costPrice?: number;
   availabilityStatus: string;
@@ -27,6 +37,9 @@ const vendorFoodItemSchema = new Schema<IVendorFoodItem>(
     vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', required: true, index: true },
     globalFoodItemId: { type: Schema.Types.ObjectId, ref: 'FoodProduct', required: true, index: true },
     price: { type: Number, required: true, min: 0 },
+    platformSellingPrice: { type: Number, min: 0 },
+    markupAmount: { type: Number, default: 0, min: 0 },
+    platformPriceManual: { type: Boolean, default: false },
     mrp: { type: Number, min: 0 },
     costPrice: { type: Number, min: 0 },
     availabilityStatus: {

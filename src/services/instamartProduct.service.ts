@@ -10,7 +10,15 @@ import { JwtPayload } from '../utils/jwt';
 import { assertOwnerOrLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { APPROVAL_STATUS, GENERIC_STATUS } from '../constants/enums';
 import { assertCategoryAndSubcategory } from './instamartGlobalProduct.service';
-import { loadPricingConfig, markupMartListing, markupMartListings, markupMartVariant } from './pricing.service';
+import {
+  applyProductPlatformPrice,
+  derivePlatformFields,
+  loadPricingConfig,
+  markupMartListing,
+  markupMartListings,
+  markupMartVariant,
+  toPricingConfig,
+} from './pricing.service';
 
 export function instamartProductListFilter(user: JwtPayload): Record<string, unknown> {
   if (user.userType === 'STORE') return { storeId: user.userId };
@@ -288,6 +296,8 @@ export async function createInstamartProduct(
             subcategoryId,
             sku: data.sku,
             sellingPrice: data.sellingPrice,
+            // A MARKUP store's platform price and markup, derived from its own price.
+            ...derivePlatformFields(data.sellingPrice, toPricingConfig(store)),
             discount: data.discount ?? 0,
             sortOrder: data.sortOrder ?? 0,
           },
@@ -347,7 +357,17 @@ export async function updateInstamartProduct(id: string, data: Record<string, un
   delete data.productId;
   delete data.categoryId;
   delete data.subcategoryId;
+
+  // Platform price: only an admin may fix it by hand; it is re-derived whenever
+  // the store's own price changes.
+  const requestedPlatformPrice = data.platformSellingPrice as number | null | undefined;
+  delete data.platformSellingPrice;
+
   Object.assign(product, data);
+  if (data.sellingPrice !== undefined || requestedPlatformPrice !== undefined) {
+    const config = await loadPricingConfig('STORE', product.storeId.toString());
+    applyProductPlatformPrice(product, product.sellingPrice, config, user, requestedPlatformPrice);
+  }
   await product.save();
   return product;
 }

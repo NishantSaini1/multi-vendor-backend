@@ -51,6 +51,11 @@ export interface IVendor extends Document {
   pricingModel: string;
   markupType: string;
   markupValue: number;
+  // Commission % the platform keeps when pricingModel is COMMISSION — set once
+  // on the vendor profile (never per product) and applied to every item the
+  // vendor sells. Unset on vendors that still rely on the older Commission
+  // rules (see order.service's commission resolution).
+  commissionPercent?: number;
   isOpen: boolean;
   temporaryClosure?: IVendorTemporaryClosure | null;
   businessHours?: IVendorBusinessHours;
@@ -109,6 +114,7 @@ const vendorSchema = new Schema<IVendor>(
     pricingModel: { type: String, enum: Object.values(PRICING_MODELS), default: PRICING_MODELS.COMMISSION },
     markupType: { type: String, enum: Object.values(DISCOUNT_TYPES), default: DISCOUNT_TYPES.PERCENTAGE },
     markupValue: { type: Number, default: 0, min: 0 },
+    commissionPercent: { type: Number, min: 0, max: 100 },
     isOpen: { type: Boolean, default: false },
     temporaryClosure: {
       type: new Schema<IVendorTemporaryClosure>({ reopensAt: { type: Date }, reason: { type: String } }, { _id: false }),

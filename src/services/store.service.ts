@@ -11,7 +11,7 @@ import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { findMatchingZone } from './deliveryZone.service';
-import { markupMartListing, toPricingConfig } from './pricing.service';
+import { markupMartListing, syncSellerProductPrices, toPricingConfig } from './pricing.service';
 import { findSellersInRange } from '../utils/geoQuery';
 import { haversineDistanceKm } from '../utils/geo';
 import { StoreType } from '../models/StoreType';
@@ -104,6 +104,9 @@ export async function updateStore(id: string, data: Record<string, unknown>, use
   // deliveryZoneId is always derived, never client-set (see createStore).
   delete data.locationId;
   delete data.deliveryZoneId;
+  // A store picks its own pricing model but never sets the platform's rate.
+  if (user.userType === 'STORE') delete data.commissionPercent;
+  const pricingChanged = data.pricingModel !== undefined || data.commissionPercent !== undefined;
 
   if (data.latitude !== undefined || data.longitude !== undefined) {
     const latitude = (data.latitude as number | undefined) ?? store.latitude;
@@ -125,6 +128,8 @@ export async function updateStore(id: string, data: Record<string, unknown>, use
 
   Object.assign(store, data);
   await store.save();
+  // A new pricing model changes every product's platform price.
+  if (pricingChanged) await syncSellerProductPrices('STORE', store.id);
   return store;
 }
 

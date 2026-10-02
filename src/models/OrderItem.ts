@@ -31,6 +31,12 @@ export interface IOrderItem extends Document {
   // orders placed before pricing models existed).
   price: number;
   vendorPrice?: number;
+  // This line's share of the order's financials (line totals, all quantities):
+  // commission withheld (COMMISSION sellers), markup baked into the price
+  // (MARKUP sellers), and what the seller is settled for the line.
+  commissionAmount?: number;
+  markupAmount?: number;
+  vendorSettlementAmount?: number;
   quantity: number;
   modifiers: IOrderItemModifier[];
   itemTotal: number;
@@ -57,6 +63,9 @@ const orderItemSchema = new Schema<IOrderItem>(
     name: { type: String, required: true },
     price: { type: Number, required: true, min: 0 },
     vendorPrice: { type: Number, min: 0 },
+    commissionAmount: { type: Number, min: 0 },
+    markupAmount: { type: Number, min: 0 },
+    vendorSettlementAmount: { type: Number },
     quantity: { type: Number, required: true, min: 1 },
     modifiers: { type: [orderItemModifierSchema], default: [] },
     itemTotal: { type: Number, required: true, min: 0 },

@@ -23,13 +23,13 @@ import { generateOrderNumber } from '../utils/orderNumber';
 import { checkServiceability } from './serviceability.service';
 import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
-import * as commissionService from './commission.service';
-import { buildOrderPricingSnapshot, customerUnitPrice, isMarkupModel, loadPricingConfig } from './pricing.service';
+import { customerUnitPrice, loadPricingConfig, platformPriceFor } from './pricing.service';
+import { buildOrderFinancials, resolveSellerCommission } from './orderFinancials.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { FOOD_ORDER_TRANSITIONS, INSTAMART_ORDER_TRANSITIONS } from '../constants/orderStatus';
 import { PAYMENT_METHODS, PAYMENT_STATUS, WALLET_TRANSACTION_TYPES } from '../constants/paymentStatus';
 import { VENDOR_STATUS, APPROVAL_STATUS, STORE_STATUS, GENERIC_STATUS } from '../constants/enums';
-import { INVENTORY_TRANSACTION_TYPES, DISCOUNT_TYPES, TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
+import { INVENTORY_TRANSACTION_TYPES, TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
 import * as walletService from './wallet.service';
 import * as refundService from './refund.service';
 import * as couponService from './coupon.service';
@@ -207,7 +207,9 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       }
       vendorUnitPrice = variant.sellingPrice;
     }
-    const unitPrice = customerUnitPrice(vendorUnitPrice, pricing);
+    // The product's own (base) pack uses its platform price (admin-fixed or
+    // the store's default markup); a named variant always uses the default markup.
+    const unitPrice = input.variantId ? customerUnitPrice(vendorUnitPrice, pricing) : platformPriceFor(vendorUnitPrice, pricing, product);
 
     // Authoritative stock check happens again inside the transaction below;
     // this pre-check just fails fast for the common case.
@@ -364,29 +366,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   // cut is the markup already baked into the prices above — so commission is
   // only resolved for COMMISSION-model sellers.
   const pricingConfig = await loadPricingConfig(businessType === BUSINESS_TYPES.FOOD ? 'VENDOR' : 'STORE', (vendorId ?? storeId)!);
-  const commissionBaseAmount = subtotal - discount;
-  const commission = isMarkupModel(pricingConfig)
-    ? null
-    : await commissionService.resolveCommission({
-        locationId: location.id,
-        vendorId,
-        storeId,
-        businessType,
-      });
-  const commissionType = commission?.type;
-  const commissionRate = commission?.value;
-  const commissionAmount = commission
-    ? commission.type === DISCOUNT_TYPES.PERCENTAGE
-      ? commissionBaseAmount * (commission.value / 100)
-      : commission.value
-    : undefined;
-
-  const pricingSnapshot = buildOrderPricingSnapshot({
-    config: pricingConfig,
-    customerAmount: subtotal - discount,
-    vendorAmount: preparedItems.reduce((sum, i) => sum + (i.vendorLineSubtotal - i.vendorLineDiscount), 0),
-    commissionAmount,
-  });
+  const commission = await resolveSellerCommission(pricingConfig, { locationId: location.id, vendorId, storeId, businessType });
 
   const session = await mongoose.startSession();
   try {
@@ -412,6 +392,23 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
         couponDiscount = result.discount;
       }
       const total = subtotal - discount + tax + deliveryFee + packagingFee + platformFee - couponDiscount;
+
+      // The order's full financial breakdown — commission/markup per line,
+      // delivery, gateway cost, expenses, net profit — from the one shared
+      // engine (see orderFinancials.service.ts), snapshotted on the order.
+      const financials = buildOrderFinancials({
+        config: pricingConfig,
+        commission,
+        lines: preparedItems.map((item) => ({
+          customerAmount: item.lineSubtotal - item.lineDiscount,
+          vendorAmount: item.vendorLineSubtotal - item.vendorLineDiscount,
+        })),
+        deliveryFee,
+        platformFee,
+        couponDiscount,
+        orderTotal: total,
+        paymentMethod: data.paymentMethod,
+      });
 
       if (businessType === BUSINESS_TYPES.INSTAMART) {
         for (const item of preparedItems) {
@@ -460,11 +457,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
             packagingFee,
             platformFee,
             total,
-            commissionType,
-            commissionRate,
-            commissionBaseAmount: commission ? commissionBaseAmount : undefined,
-            commissionAmount,
-            ...pricingSnapshot,
+            ...financials.order,
             paymentMethod: data.paymentMethod,
             paymentStatus: PAYMENT_STATUS.PENDING,
             deliveryAddress: {
@@ -528,13 +521,16 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       }
 
       await OrderItem.insertMany(
-        preparedItems.map((item) => ({
+        preparedItems.map((item, index) => ({
           orderId: order.id,
           productId: item.productId,
           variantId: item.variantId,
           name: item.name,
           price: item.price,
           vendorPrice: item.vendorPrice,
+          commissionAmount: financials.lines[index].commissionAmount,
+          markupAmount: financials.lines[index].markupAmount,
+          vendorSettlementAmount: financials.lines[index].vendorSettlementAmount,
           quantity: item.quantity,
           modifiers: item.modifiers,
           itemTotal: item.itemTotal,

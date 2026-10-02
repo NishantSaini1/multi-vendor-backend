@@ -39,6 +39,10 @@ export interface IStore extends Document {
   pricingModel: string;
   markupType: string;
   markupValue: number;
+  // Commission % the platform keeps when pricingModel is COMMISSION — set once
+  // on the store profile (never per product). Unset on stores that still rely
+  // on the older Commission rules.
+  commissionPercent?: number;
   openingTime: string;
   closingTime: string;
   rating: number;
@@ -74,6 +78,7 @@ const storeSchema = new Schema<IStore>(
     pricingModel: { type: String, enum: Object.values(PRICING_MODELS), default: PRICING_MODELS.COMMISSION },
     markupType: { type: String, enum: Object.values(DISCOUNT_TYPES), default: DISCOUNT_TYPES.PERCENTAGE },
     markupValue: { type: Number, default: 0, min: 0 },
+    commissionPercent: { type: Number, min: 0, max: 100 },
     openingTime: { type: String, default: '09:00' },
     closingTime: { type: String, default: '22:00' },
     rating: { type: Number, default: 0 },

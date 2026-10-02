@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { phoneSchema, passwordSchema } from './auth.validator';
-import { STORE_STATUS, APPROVAL_STATUS } from '../constants/enums';
+import { STORE_STATUS, APPROVAL_STATUS, PRICING_MODELS } from '../constants/enums';
 
 const objectId = z.string().length(24);
 
@@ -20,6 +20,11 @@ export const createStoreSchema = z.object({
     serviceRadius: z.number().positive().max(100).optional(),
     openingTime: z.string().default('09:00'),
     closingTime: z.string().default('22:00'),
+    // Pricing model for everything this store sells, and — for COMMISSION —
+    // the percentage the platform keeps. Admin-set; a store editing its own
+    // profile can change pricingModel only (see store.service.ts).
+    pricingModel: z.enum(Object.values(PRICING_MODELS) as [string, ...string[]]).optional(),
+    commissionPercent: z.number().min(0).max(100).optional(),
   }),
 });
 

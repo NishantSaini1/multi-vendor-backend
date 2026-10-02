@@ -5,7 +5,7 @@ import { ModifierGroup } from '../models/ModifierGroup';
 import { ModifierOption } from '../models/ModifierOption';
 import { IOrderItemModifier } from '../models/OrderItem';
 import { ApiError } from '../utils/ApiError';
-import { customerModifierPrice, customerUnitPrice, loadPricingConfig, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
+import { customerModifierPrice, customerUnitPrice, loadPricingConfig, platformPriceFor, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
 import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 // Single source of truth for "resolve + validate + price one Food line item"
@@ -156,7 +156,9 @@ export async function resolveFoodLineItem(
   }
 
   const pricing = await loadPricingConfig('VENDOR', vendorFoodItem.vendorId.toString());
-  const unitPrice = customerUnitPrice(vendorUnitPrice, pricing);
+  // The item's own (base) price uses its platform price (admin-fixed or the
+  // vendor's default markup); a named variant always uses the default markup.
+  const unitPrice = variant ? customerUnitPrice(vendorUnitPrice, pricing) : platformPriceFor(vendorUnitPrice, pricing, vendorFoodItem);
 
   const {
     snapshots: modifiers,

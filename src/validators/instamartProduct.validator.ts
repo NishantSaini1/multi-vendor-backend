@@ -47,6 +47,9 @@ export const updateInstamartProductSchema = z.object({
   body: z.object({
     sku: z.string().min(1).optional(),
     sellingPrice: z.number().nonnegative().optional(),
+    // Admin-only: fix the platform selling price by hand (MARKUP stores).
+    // null releases it back to the store's default markup.
+    platformSellingPrice: z.number().nonnegative().nullable().optional(),
     discount: z.number().nonnegative().optional(),
     sortOrder: z.number().int().optional(),
   }),

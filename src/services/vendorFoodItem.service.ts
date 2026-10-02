@@ -10,7 +10,15 @@ import { assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
 import { findFoodProductOrThrow } from './foodProduct.service';
 import { assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
-import { DEFAULT_PRICING_CONFIG, markupFoodItem, markupFoodVariant, markupModifierOption, toPricingConfig } from './pricing.service';
+import {
+  DEFAULT_PRICING_CONFIG,
+  applyProductPlatformPrice,
+  derivePlatformFields,
+  markupFoodItem,
+  markupFoodVariant,
+  markupModifierOption,
+  toPricingConfig,
+} from './pricing.service';
 
 // The pricing config to apply to what `user` is about to read: a CUSTOMER sees
 // the marked-up price under the MARKUP pricing model (see pricing.service.ts);
@@ -69,7 +77,7 @@ export async function addVendorFoodItem(
   },
   user: JwtPayload,
 ) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
 
   const globalItem = await findFoodProductOrThrow(data.globalFoodItemId);
   if (globalItem.status !== GLOBAL_FOOD_ITEM_STATUS.ACTIVE) {
@@ -82,6 +90,9 @@ export async function addVendorFoodItem(
       vendorId,
       globalFoodItemId: data.globalFoodItemId,
       price: data.price,
+      // The vendor's price stays `price`; a MARKUP vendor's platform price and
+      // markup are derived from it (see pricing.service.ts).
+      ...derivePlatformFields(data.price, toPricingConfig(vendor)),
       mrp: data.mrp,
       costPrice: data.costPrice,
       preparationTime: data.preparationTime,
@@ -113,7 +124,7 @@ export async function getVendorFoodItemById(vendorId: string, id: string, user: 
 }
 
 export async function updateVendorFoodItem(vendorId: string, id: string, data: Record<string, unknown>, user: JwtPayload) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   const item = await findVendorFoodItemOrThrow(vendorId, id);
 
   // Never reassignable via a plain update — a vendor relists a different
@@ -121,7 +132,15 @@ export async function updateVendorFoodItem(vendorId: string, id: string, data: R
   delete data.vendorId;
   delete data.globalFoodItemId;
 
+  // Platform price: only an admin may fix it by hand; it is re-derived whenever
+  // the vendor's own price changes.
+  const requestedPlatformPrice = data.platformSellingPrice as number | null | undefined;
+  delete data.platformSellingPrice;
+
   Object.assign(item, data);
+  if (data.price !== undefined || requestedPlatformPrice !== undefined) {
+    applyProductPlatformPrice(item, item.price, toPricingConfig(vendor), user, requestedPlatformPrice);
+  }
   await item.save();
   await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
   return item;

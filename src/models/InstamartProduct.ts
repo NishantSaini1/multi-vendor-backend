@@ -14,7 +14,17 @@ export interface IInstamartProduct extends Document {
   categoryId: Types.ObjectId;
   subcategoryId?: Types.ObjectId;
   sku?: string;
+  // The store's own (original) selling price.
   sellingPrice: number;
+  // MARKUP pricing model: what the platform lists this product at for customers,
+  // and the difference from the seller's own price (markupAmount =
+  // platformSellingPrice - the seller's original price). Kept in sync by
+  // pricing.service; when platformPriceManual is true an admin has fixed the
+  // platform price by hand, otherwise it follows the seller's default markup.
+  // Unused (markup 0) for COMMISSION sellers.
+  platformSellingPrice?: number;
+  markupAmount: number;
+  platformPriceManual: boolean;
   discount: number;
   sortOrder: number;
   status: string;
@@ -34,6 +44,9 @@ const instamartProductSchema = new Schema<IInstamartProduct>(
     subcategoryId: { type: Schema.Types.ObjectId, ref: 'InstamartSubcategory' },
     sku: { type: String },
     sellingPrice: { type: Number, required: true, min: 0 },
+    platformSellingPrice: { type: Number, min: 0 },
+    markupAmount: { type: Number, default: 0, min: 0 },
+    platformPriceManual: { type: Boolean, default: false },
     discount: { type: Number, default: 0 },
     sortOrder: { type: Number, default: 0 },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },

@@ -55,6 +55,20 @@ export interface IOrder extends Document {
   markupAmount?: number;
   vendorSettlementAmount?: number;
   platformProfit?: number;
+  // Full financial breakdown, each component kept apart (they settle and
+  // account differently): platformRevenue is the commission + markup taken on
+  // the items; deliveryRevenue is the delivery fee the customer paid, with
+  // deliveryPartnerPayout the share that goes to the rider; paymentGatewayFee
+  // and couponExpense are costs the platform bears; platformExpenses is those
+  // costs plus the rider payout; platformNetProfit is revenue minus expenses.
+  // Tax (order.tax) is collected on the government's behalf and is in neither.
+  platformRevenue?: number;
+  deliveryRevenue?: number;
+  deliveryPartnerPayout?: number;
+  paymentGatewayFee?: number;
+  couponExpense?: number;
+  platformExpenses?: number;
+  platformNetProfit?: number;
   paymentId?: Types.ObjectId;
   paymentMethod: string;
   paymentStatus: string;
@@ -110,6 +124,13 @@ const orderSchema = new Schema<IOrder>(
     markupAmount: { type: Number, min: 0 },
     vendorSettlementAmount: { type: Number },
     platformProfit: { type: Number },
+    platformRevenue: { type: Number },
+    deliveryRevenue: { type: Number, min: 0 },
+    deliveryPartnerPayout: { type: Number, min: 0 },
+    paymentGatewayFee: { type: Number, min: 0 },
+    couponExpense: { type: Number, min: 0 },
+    platformExpenses: { type: Number },
+    platformNetProfit: { type: Number },
     paymentId: { type: Schema.Types.ObjectId, ref: 'Payment' },
     paymentMethod: { type: String, enum: Object.values(PAYMENT_METHODS), required: true },
     paymentStatus: { type: String, enum: Object.values(PAYMENT_STATUS), default: PAYMENT_STATUS.PENDING },

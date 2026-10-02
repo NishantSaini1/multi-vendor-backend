@@ -5,6 +5,8 @@ import { ApiError } from '../utils/ApiError';
 import { locationScopeFilter } from '../middleware/rbac.middleware';
 import { DISCOUNT_TYPES } from '../constants/enums';
 import * as pricingService from '../services/pricing.service';
+import * as orderFinancials from '../services/orderFinancials.service';
+import * as financialReport from '../services/financialReport.service';
 
 function requireUser(req: Request) {
   if (!req.user) throw ApiError.unauthorized();
@@ -17,7 +19,7 @@ export const getVendorPricing = catchAsync(async (req: Request, res: Response) =
 
 export const updateVendorPricing = catchAsync(async (req: Request, res: Response) => {
   const result = await pricingService.updateVendorPricing(req.params.id, req.body, requireUser(req));
-  sendSuccess(res, result, 'Vendor pricing model updated');
+  sendSuccess(res, result, 'Vendor pricing updated');
 });
 
 export const getStorePricing = catchAsync(async (req: Request, res: Response) => {
@@ -26,28 +28,30 @@ export const getStorePricing = catchAsync(async (req: Request, res: Response) =>
 
 export const updateStorePricing = catchAsync(async (req: Request, res: Response) => {
   const result = await pricingService.updateStorePricing(req.params.id, req.body, requireUser(req));
-  sendSuccess(res, result, 'Store pricing model updated');
+  sendSuccess(res, result, 'Store pricing updated');
 });
 
 // Worked example of what an order line would look like under a pricing model,
 // so a vendor/admin can see the effect before saving it.
 export const preview = catchAsync(async (req: Request, res: Response) => {
   const q = req.query as Record<string, string>;
-  const result = pricingService.previewPricing({
+  const result = orderFinancials.previewFinancials({
     vendorPrice: Number(q.vendorPrice),
     quantity: q.quantity ? Number(q.quantity) : 1,
     config: pricingService.toPricingConfig({
       pricingModel: q.pricingModel,
+      commissionPercent: q.commissionPercent !== undefined ? Number(q.commissionPercent) : undefined,
       markupType: q.markupType ?? DISCOUNT_TYPES.PERCENTAGE,
       markupValue: q.markupValue ? Number(q.markupValue) : 0,
     }),
-    commissionType: q.commissionType,
-    commissionValue: q.commissionValue ? Number(q.commissionValue) : undefined,
+    platformPrice: q.platformPrice ? Number(q.platformPrice) : undefined,
+    deliveryFee: q.deliveryFee ? Number(q.deliveryFee) : undefined,
+    paymentMethod: q.paymentMethod,
   });
   sendSuccess(res, result);
 });
 
-export const earnings = catchAsync(async (req: Request, res: Response) => {
+function reportScope(req: Request) {
   const user = requireUser(req);
   const filter: Record<string, unknown> = { ...locationScopeFilter(user) };
   if (req.query.locationId) filter.locationId = req.query.locationId;
@@ -58,6 +62,17 @@ export const earnings = catchAsync(async (req: Request, res: Response) => {
   const range: { from?: Date; to?: Date } = {};
   if (req.query.from) range.from = new Date(String(req.query.from));
   if (req.query.to) range.to = new Date(String(req.query.to));
+  return { filter, range };
+}
 
-  sendSuccess(res, await pricingService.getPricingEarnings(filter, range));
+// Platform financials, Food and Instamart reported separately plus the total.
+export const financialReportHandler = catchAsync(async (req: Request, res: Response) => {
+  const { filter, range } = reportScope(req);
+  sendSuccess(res, await financialReport.getFinancialReport(filter, range));
+});
+
+// Vendor-level (Food) / store-level (Instamart) settlement breakdown.
+export const sellerFinancialsHandler = catchAsync(async (req: Request, res: Response) => {
+  const { filter, range } = reportScope(req);
+  sendSuccess(res, await financialReport.getSellerFinancials(filter, range));
 });

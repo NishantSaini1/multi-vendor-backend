@@ -13,7 +13,7 @@ import { assertLocationAccess } from '../middleware/rbac.middleware';
 import { VENDOR_STATUS, APPROVAL_STATUS, COMMISSION_LEVELS, GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { findSellersInRange } from '../utils/geoQuery';
-import { DEFAULT_PRICING_CONFIG, markupFoodItem, toPricingConfig } from './pricing.service';
+import { DEFAULT_PRICING_CONFIG, markupFoodItem, syncSellerProductPrices, toPricingConfig } from './pricing.service';
 
 export async function listVendors(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -121,7 +121,12 @@ export async function updateVendor(id: string, data: Record<string, unknown>, us
   // A vendor may edit their own profile, but never reassign which location
   // they belong to — that stays an admin-only action.
   const payload = user.userType === 'VENDOR' ? { ...data } : data;
-  if (user.userType === 'VENDOR') delete payload.locationId;
+  if (user.userType === 'VENDOR') {
+    delete payload.locationId;
+    // A vendor picks its own pricing model but never sets the platform's rate.
+    delete payload.commissionPercent;
+  }
+  const pricingChanged = payload.pricingModel !== undefined || payload.commissionPercent !== undefined;
 
   Object.assign(vendor, payload);
   // Validate only the fields this request changed. Vendors created before
@@ -130,6 +135,8 @@ export async function updateVendor(id: string, data: Record<string, unknown>, us
   // a bare { isOpen } open/close toggle — with "Validation failed". Anything
   // the request does set (including vendorTypeIds itself) is still validated.
   await vendor.save({ validateModifiedOnly: true });
+  // A new pricing model changes every item's platform price.
+  if (pricingChanged) await syncSellerProductPrices('VENDOR', vendor.id);
   return vendor;
 }
 

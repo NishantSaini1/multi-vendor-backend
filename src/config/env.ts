@@ -75,6 +75,10 @@ const envSchema = z.object({
   // earnings under that model — see settlement.service.ts), so this is a
   // separate, simpler flat percentage rather than a full Commission rule.
   PLATFORM_DELIVERY_MARGIN_PERCENT: z.coerce.number().default(20),
+  // All-in payment-gateway cost (fee + GST on it) as a % of the order total,
+  // charged only on online (RAZORPAY) payments — an estimate snapshotted onto
+  // each order as paymentGatewayFee for the platform's profit reporting.
+  PAYMENT_GATEWAY_FEE_PERCENT: z.coerce.number().min(0).default(2),
 
   // Nearest-partner auto-assignment once an order is READY_FOR_PICKUP (see
   // delivery.service.ts's autoAssignDeliveryPartner). Admins can always
