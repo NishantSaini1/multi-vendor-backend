@@ -4,6 +4,7 @@ import { sendSuccess, buildPagination } from '../utils/ApiResponse';
 import { parsePagination } from '../utils/pagination';
 import { ApiError } from '../utils/ApiError';
 import * as settlementService from '../services/settlement.service';
+import { settlementForViewer } from '../services/pricing.service';
 
 function requireUser(req: Request) {
   if (!req.user) throw ApiError.unauthorized();
@@ -28,12 +29,13 @@ export const list = catchAsync(async (req: Request, res: Response) => {
   if (req.query.status) filter.status = req.query.status;
 
   const { items, total } = await settlementService.listSettlements(filter, pagination);
-  sendSuccess(res, items, 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
+  sendSuccess(res, settlementForViewer(items, user.userType), 'Success', 200, buildPagination(pagination.page, pagination.limit, total));
 });
 
 export const getById = catchAsync(async (req: Request, res: Response) => {
-  const settlement = await settlementService.getSettlementById(req.params.id, requireUser(req));
-  sendSuccess(res, settlement);
+  const user = requireUser(req);
+  const settlement = await settlementService.getSettlementById(req.params.id, user);
+  sendSuccess(res, settlementForViewer(settlement, user.userType));
 });
 
 export const updateAdjustments = catchAsync(async (req: Request, res: Response) => {

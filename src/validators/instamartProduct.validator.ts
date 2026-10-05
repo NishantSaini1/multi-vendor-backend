@@ -32,10 +32,8 @@ export const createInstamartProductSchema = z.object({
       productId: objectId.optional(),
       newProduct: newProductSchema.optional(),
       sku: z.string().min(1).optional(),
-      // COMMISSION: Platform Selling Price. MARKUP: Vendor Original Price (the
-      // selling price is derived). Either spelling below works too.
+      // The Selling Price (what customers pay): `sellingPrice`, or `platformSellingPrice` as an alias.
       sellingPrice: z.number().nonnegative().optional(),
-      vendorOriginalPrice: z.number().nonnegative().optional(),
       platformSellingPrice: z.number().nonnegative().optional(),
       // Admin-only: this product's markup % (MARKUP stores).
       markupPercent: z.number().min(0).max(1000).optional(),
@@ -53,11 +51,9 @@ export const updateInstamartProductSchema = z.object({
   body: z.object({
     sku: z.string().min(1).optional(),
     sellingPrice: z.number().nonnegative().optional(),
-    vendorOriginalPrice: z.number().nonnegative().optional(),
-    // COMMISSION: the Platform Selling Price. MARKUP: refused unless it equals the derived price.
+    // Alias of `sellingPrice`.
     platformSellingPrice: z.number().nonnegative().optional(),
-    // Admin-only: this product's markup % (MARKUP stores); the platform selling
-    // price and markup amount are derived from it.
+    // Admin-only: this product's markup % (MARKUP stores) — internal, never shown to sellers or customers.
     markupPercent: z.number().min(0).max(1000).optional(),
     discount: z.number().nonnegative().optional(),
     sortOrder: z.number().int().optional(),

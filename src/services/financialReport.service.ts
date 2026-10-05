@@ -432,13 +432,13 @@ export interface ProductProfitRow extends ProfitMetrics {
   // snapshots) — 0 for COMMISSION sales.
   markupPercent: number;
   // The product as listed NOW — it can differ from what was charged then.
-  current?: { vendorPrice: number; markupPercent: number; sellingPrice: number; categoryId?: string; categoryName?: string };
+  current?: { markupPercent: number; sellingPrice: number; categoryId?: string; categoryName?: string };
 }
 
 async function currentListings(productIds: Types.ObjectId[]) {
   const [foodItems, martItems] = await Promise.all([
-    VendorFoodItem.find({ _id: { $in: productIds } }).select('price markupPercent platformSellingPrice globalFoodItemId'),
-    InstamartProduct.find({ _id: { $in: productIds } }).select('sellingPrice markupPercent platformSellingPrice categoryId'),
+    VendorFoodItem.find({ _id: { $in: productIds } }).select('price markupPercent globalFoodItemId'),
+    InstamartProduct.find({ _id: { $in: productIds } }).select('sellingPrice markupPercent categoryId'),
   ]);
   const globals = foodItems.length ? await FoodProduct.find({ _id: { $in: foodItems.map((i) => i.globalFoodItemId) } }).select('categoryId') : [];
   const globalCategory = new Map(globals.map((g) => [g.id as string, g.categoryId?.toString()]));
@@ -453,9 +453,8 @@ async function currentListings(productIds: Types.ObjectId[]) {
   for (const item of foodItems) {
     const categoryId = globalCategory.get(item.globalFoodItemId.toString());
     info.set(item.id, {
-      vendorPrice: item.price,
       markupPercent: item.markupPercent ?? 0,
-      sellingPrice: item.platformSellingPrice ?? item.price,
+      sellingPrice: item.price,
       categoryId,
       categoryName: categoryId ? categoryName.get(categoryId) : undefined,
     });
@@ -463,9 +462,8 @@ async function currentListings(productIds: Types.ObjectId[]) {
   for (const item of martItems) {
     const categoryId = item.categoryId?.toString();
     info.set(item.id, {
-      vendorPrice: item.sellingPrice,
       markupPercent: item.markupPercent ?? 0,
-      sellingPrice: item.platformSellingPrice ?? item.sellingPrice,
+      sellingPrice: item.sellingPrice,
       categoryId,
       categoryName: categoryId ? categoryName.get(categoryId) : undefined,
     });

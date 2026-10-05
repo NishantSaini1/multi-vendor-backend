@@ -14,22 +14,19 @@ export interface IInstamartProduct extends Document {
   categoryId: Types.ObjectId;
   subcategoryId?: Types.ObjectId;
   sku?: string;
-  // Platform Selling Price — what the customer pays, for BOTH pricing models
-  // (never greater than the product's printed MRP). Under COMMISSION the store
-  // sets it; under MARKUP it is derived: vendorOriginalPrice + markupAmount.
+  // Selling Price — what the customer pays, for BOTH pricing models (never
+  // greater than the product's printed MRP). The store sets it.
   sellingPrice: number;
-  // The store's own (original) price, before any platform earning. Under
-  // MARKUP the store is settled this; under COMMISSION it is informational.
-  vendorOriginalPrice?: number;
-  // MARKUP pricing model: this product's own markup percentage, set by the
-  // platform; markupAmount = vendorOriginalPrice × markupPercent / 100 and
-  // sellingPrice = vendorOriginalPrice + markupAmount, all kept in sync by
-  // pricing.service. Under COMMISSION the effective markup is 0.
+  // MARKUP pricing model, internal to the platform (admins only): this
+  // product's own markup %, and the platform's profit per unit it implies —
+  // markupAmount = sellingPrice − sellingPrice / (1 + markupPercent / 100),
+  // kept in sync by pricing.service. Never shown to customers or sellers. Under
+  // COMMISSION the effective markup is 0.
   markupPercent: number;
   markupAmount: number;
-  // Mirror of `sellingPrice` under its business name, so APIs can speak in
-  // terms of Platform Selling Price. Always written together with it.
-  platformSellingPrice?: number;
+  // 2 = priced in the current model (selling price stored, markup internal). Products
+  // without it predate it and are converted by the migrate:product-markup script.
+  pricingSchemaVersion?: number;
   discount: number;
   sortOrder: number;
   status: string;
@@ -49,10 +46,9 @@ const instamartProductSchema = new Schema<IInstamartProduct>(
     subcategoryId: { type: Schema.Types.ObjectId, ref: 'InstamartSubcategory' },
     sku: { type: String },
     sellingPrice: { type: Number, required: true, min: 0 },
-    vendorOriginalPrice: { type: Number, min: 0 },
     markupPercent: { type: Number, default: 0, min: 0, max: 1000 },
-    platformSellingPrice: { type: Number, min: 0 },
     markupAmount: { type: Number, default: 0, min: 0 },
+    pricingSchemaVersion: { type: Number },
     discount: { type: Number, default: 0 },
     sortOrder: { type: Number, default: 0 },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },

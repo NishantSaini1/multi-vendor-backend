@@ -23,7 +23,7 @@ import { generateOrderNumber } from '../utils/orderNumber';
 import { checkServiceability } from './serviceability.service';
 import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
-import { customerUnitPrice, isMarkupModel, loadPricingConfig, resolveBasePricing } from './pricing.service';
+import { effectiveMarkupPercent, isMarkupModel, loadPricingConfig, vendorShareOf } from './pricing.service';
 import { assertDeliveryCapacity } from './deliveryCapacity.service';
 import { buildOrderFinancials, resolveSellerCommission } from './orderFinancials.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
@@ -145,14 +145,18 @@ async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[])
       0,
       resolved.modifiersUnitTotal,
     );
-    const vendorLine = computeLine(resolved.vendorUnitPrice, input.quantity, 0, 0, resolved.vendorModifiersUnitTotal);
+    // Under MARKUP the vendor is settled their share of the sale (see pricing.service's vendorShareOf).
+    const vendorLine = {
+      lineSubtotal: vendorShareOf(lineSubtotal, resolved.markupPercent),
+      lineDiscount: vendorShareOf(lineDiscount, resolved.markupPercent),
+    };
 
     prepared.push({
       productId: resolved.vendorFoodItem.id,
       variantId: input.variantId,
       name: resolved.name,
       price: resolved.unitPrice,
-      vendorPrice: resolved.vendorUnitPrice,
+      vendorPrice: vendorShareOf(resolved.unitPrice, resolved.markupPercent),
       markupPercent: resolved.markupPercent,
       mrp: resolved.mrp,
       discountPercent: 0,
@@ -205,12 +209,8 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
     // sellingPrice/mrp (its own pack size/unit) is always a valid, orderable
     // choice in its own right, same as any named variant — variants are
     // additional pack-size options alongside it, not a replacement for it.
-    // The product's own pack: the stored Platform Selling Price is what the
-    // customer pays, vendorOriginalPrice what the store is settled. A variant
-    // carries the product's markup %.
-    const base = resolveBasePricing(product.sellingPrice, pricing, product);
-    let unitPrice = base.sellingPrice;
-    let vendorUnitPrice = base.vendorOriginalPrice;
+    // The stored selling price of the product's own pack (or its variant) is what the customer pays.
+    let unitPrice = product.sellingPrice;
     if (input.variantId) {
       const variant = await InstamartVariant.findById(input.variantId);
       if (!variant || variant.productId.toString() !== product.id) {
@@ -219,8 +219,7 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       if (variant.status !== GENERIC_STATUS.ACTIVE) {
         throw ApiError.unprocessable(`${globalProduct.name} (${variant.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
       }
-      vendorUnitPrice = variant.sellingPrice;
-      unitPrice = customerUnitPrice(variant.sellingPrice, pricing, product);
+      unitPrice = variant.sellingPrice;
     }
 
     // Authoritative stock check happens again inside the transaction below;
@@ -236,15 +235,17 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       product.discount,
       globalProduct.gst,
     );
-    const vendorLine = computeLine(vendorUnitPrice, input.quantity, product.discount, globalProduct.gst);
+    // Under MARKUP the store is settled its share of the sale (see pricing.service's vendorShareOf).
+    const markupPercent = effectiveMarkupPercent(pricing, product);
+    const vendorLine = { lineSubtotal: vendorShareOf(lineSubtotal, markupPercent), lineDiscount: vendorShareOf(lineDiscount, markupPercent) };
 
     prepared.push({
       productId: product.id,
       variantId: input.variantId,
       name: globalProduct.name,
       price: unitPrice,
-      vendorPrice: vendorUnitPrice,
-      markupPercent: base.markupPercent,
+      vendorPrice: vendorShareOf(unitPrice, markupPercent),
+      markupPercent,
       mrp: globalProduct.mrp,
       discountPercent: product.discount ?? 0,
       vendorLineSubtotal: vendorLine.lineSubtotal,
@@ -561,10 +562,8 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           vendorSettlementAmount: financials.lines[index].vendorSettlementAmount,
           // Pricing snapshot — what this line was priced at the moment of the order.
           markupPercent: item.markupPercent,
-          // Markup only exists under MARKUP — under COMMISSION the vendor's original
-          // price is informational and the platform's cut is the commission.
+          // Markup only exists under MARKUP; under COMMISSION the platform's cut is the commission.
           unitMarkupAmount: isMarkupModel(pricingConfig) ? Math.max(0, Math.round((item.price - item.vendorPrice + Number.EPSILON) * 100) / 100) : 0,
-          platformSellingPrice: item.price,
           totalVendorAmount: Math.round((item.vendorLineSubtotal - item.vendorLineDiscount + Number.EPSILON) * 100) / 100,
           totalSellingAmount: Math.round((item.lineSubtotal - item.lineDiscount + Number.EPSILON) * 100) / 100,
           totalAdminProfit:
@@ -573,9 +572,11 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           vendorId,
           storeId,
           pricingModel: financials.order.pricingModel,
-          vendorOriginalPrice: item.vendorPrice,
           mrp: item.mrp,
           discountPercent: item.discountPercent,
+          customerDiscount: Math.round((item.lineDiscount + Number.EPSILON) * 100) / 100,
+          adminProfit:
+            Math.round((financials.lines[index].markupAmount + financials.lines[index].commissionAmount + Number.EPSILON) * 100) / 100,
           commissionPercent: financials.order.commissionType === 'PERCENTAGE' ? financials.order.commissionRate : undefined,
           vendorPayable: financials.lines[index].vendorSettlementAmount,
           totalAdminMarkupProfit: financials.lines[index].markupAmount,

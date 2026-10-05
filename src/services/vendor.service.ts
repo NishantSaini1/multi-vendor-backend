@@ -14,7 +14,7 @@ import { assertLocationAccess } from '../middleware/rbac.middleware';
 import { VENDOR_STATUS, APPROVAL_STATUS, COMMISSION_LEVELS, GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { findSellersInRange } from '../utils/geoQuery';
-import { DEFAULT_PRICING_CONFIG, markupFoodItem, syncSellerProductPrices, toPricingConfig } from './pricing.service';
+import { productForViewer, syncSellerProductPrices } from './pricing.service';
 
 export async function listVendors(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -233,20 +233,17 @@ export async function getVendorProducts(
     ? await FoodCategory.find({ _id: { $in: categoryIds } }).select('name displayOrder')
     : [];
   const categoryById = new Map(categories.map((c) => [c.id as string, c]));
-  // A customer sees the price they'd actually pay — under the MARKUP pricing
-  // model that's the vendor's price plus the platform markup (see
-  // pricing.service.ts); vendor/admin views keep the vendor's own price.
-  const pricing = user.userType === 'CUSTOMER' ? toPricingConfig(vendor) : DEFAULT_PRICING_CONFIG;
+  // Only an admin sees a product's markup (see pricing.service's productForViewer).
   const withCategory = items.map((item) => {
     const cid = (item.globalFoodItemId as unknown as { categoryId?: mongoose.Types.ObjectId } | null)?.categoryId?.toString();
     const category = cid ? categoryById.get(cid) : undefined;
-    return markupFoodItem(
+    return productForViewer(
       {
         ...item.toJSON(),
         categoryName: category?.name ?? null,
         categoryDisplayOrder: (category as unknown as { displayOrder?: number } | undefined)?.displayOrder ?? null,
       } as Record<string, unknown>,
-      pricing,
+      user.userType,
     );
   });
   return { items: withCategory, total };

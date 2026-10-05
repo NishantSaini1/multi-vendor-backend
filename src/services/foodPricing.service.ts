@@ -5,7 +5,7 @@ import { ModifierGroup } from '../models/ModifierGroup';
 import { ModifierOption } from '../models/ModifierOption';
 import { IOrderItemModifier } from '../models/OrderItem';
 import { ApiError } from '../utils/ApiError';
-import { customerModifierPrice, customerUnitPrice, loadPricingConfig, resolveBasePricing, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
+import { effectiveMarkupPercent, loadPricingConfig } from './pricing.service';
 import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 // Single source of truth for "resolve + validate + price one Food line item"
@@ -15,25 +15,22 @@ import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY 
 // determined. Never trust a client-supplied price/name — everything here is
 // read fresh from the DB.
 //
-// Under the MARKUP pricing model (see pricing.service.ts) `unitPrice`/
-// `modifiersUnitTotal`/`modifiers[].price` are what the CUSTOMER pays (vendor
-// price + markup) — cart and checkout use them as-is — while the
-// `vendor*` fields keep the vendor's own original prices for settlement.
-// Under COMMISSION the two are identical.
+// `unitPrice`, `modifiersUnitTotal` and `modifiers[].price` are exactly the
+// stored selling prices — what the customer pays. Under MARKUP the item's
+// markup % only splits that amount between the vendor and the platform (see
+// orderFinancials.service.ts); it never changes what is charged.
 export interface ResolvedFoodLineItem {
   vendorFoodItem: IVendorFoodItem;
   globalItem: IFoodProduct;
   variant?: IFoodVariant;
   name: string;
   unitPrice: number;
-  vendorUnitPrice: number;
   // The item's own markup % in effect (0 unless the vendor is on MARKUP).
   markupPercent: number;
   // The printed MRP, when the vendor set one.
   mrp?: number;
   modifiers: IOrderItemModifier[];
   modifiersUnitTotal: number;
-  vendorModifiersUnitTotal: number;
 }
 
 // Generic per-line price math shared by Food AND Instamart order lines
@@ -60,16 +57,12 @@ export function computeLine(unitPrice: number, quantity: number, discountPct: nu
 export async function resolveModifierSelections(
   vendorFoodItemId: string,
   selections: { modifierOptionId: string; quantity: number }[],
-  pricing: PricingConfig = DEFAULT_PRICING_CONFIG,
-  // The item the options belong to — their price carries its markup %.
-  item?: { markupPercent?: number | null },
-): Promise<{ snapshots: IOrderItemModifier[]; unitTotal: number; vendorUnitTotal: number }> {
+): Promise<{ snapshots: IOrderItemModifier[]; unitTotal: number }> {
   const allGroups = await ModifierGroup.find({ vendorFoodItemId, status: GENERIC_STATUS.ACTIVE });
   const groupById = new Map(allGroups.map((g) => [g.id, g]));
 
   const snapshots: IOrderItemModifier[] = [];
   let unitTotal = 0;
-  let vendorUnitTotal = 0;
   const selectedCountByGroup = new Map<string, number>();
 
   if (selections.length > 0) {
@@ -85,14 +78,12 @@ export async function resolveModifierSelections(
       }
 
       selectedCountByGroup.set(group.id, (selectedCountByGroup.get(group.id) ?? 0) + selection.quantity);
-      const customerOptionPrice = customerModifierPrice(option.price, pricing, item);
-      unitTotal += customerOptionPrice * selection.quantity;
-      vendorUnitTotal += option.price * selection.quantity;
+      unitTotal += option.price * selection.quantity;
       snapshots.push({
         modifierGroupId: group._id,
         modifierOptionId: option._id,
         name: option.name,
-        price: customerOptionPrice,
+        price: option.price,
         quantity: selection.quantity,
       });
     }
@@ -111,7 +102,7 @@ export async function resolveModifierSelections(
     }
   }
 
-  return { snapshots, unitTotal, vendorUnitTotal };
+  return { snapshots, unitTotal };
 }
 
 // Resolves, validates, and prices ONE Food order/cart line from scratch.
@@ -147,13 +138,9 @@ export async function resolveFoodLineItem(
     throw ApiError.unprocessable('This item is not currently available', 'PRODUCT_NOT_AVAILABLE');
   }
 
-  // The item's own price: the stored Platform Selling Price is what the
-  // customer pays and vendorOriginalPrice what the vendor is settled (see
-  // pricing.service's resolveBasePricing). A variant carries the item's markup %.
+  // The item's stored selling price (or its variant's) is what the customer pays.
   const pricing = await loadPricingConfig('VENDOR', vendorFoodItem.vendorId.toString());
-  const base = resolveBasePricing(vendorFoodItem.price, pricing, vendorFoodItem);
-  let unitPrice = base.sellingPrice;
-  let vendorUnitPrice = base.vendorOriginalPrice;
+  let unitPrice = vendorFoodItem.price;
   let variant: IFoodVariant | undefined;
   if (input.variantId) {
     const found = await FoodVariant.findById(input.variantId);
@@ -164,15 +151,10 @@ export async function resolveFoodLineItem(
       throw ApiError.unprocessable(`${globalItem.name} (${found.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
     }
     variant = found;
-    vendorUnitPrice = found.price;
-    unitPrice = customerUnitPrice(found.price, pricing, vendorFoodItem);
+    unitPrice = found.price;
   }
 
-  const {
-    snapshots: modifiers,
-    unitTotal: modifiersUnitTotal,
-    vendorUnitTotal: vendorModifiersUnitTotal,
-  } = await resolveModifierSelections(vendorFoodItem.id, input.modifiers, pricing, vendorFoodItem);
+  const { snapshots: modifiers, unitTotal: modifiersUnitTotal } = await resolveModifierSelections(vendorFoodItem.id, input.modifiers);
 
   return {
     vendorFoodItem,
@@ -180,11 +162,9 @@ export async function resolveFoodLineItem(
     variant,
     name: globalItem.name,
     unitPrice,
-    vendorUnitPrice,
-    markupPercent: base.markupPercent,
+    markupPercent: effectiveMarkupPercent(pricing, vendorFoodItem),
     mrp: vendorFoodItem.mrp,
     modifiers,
     modifiersUnitTotal,
-    vendorModifiersUnitTotal,
   };
 }

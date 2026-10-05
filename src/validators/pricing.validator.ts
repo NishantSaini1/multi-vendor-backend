@@ -26,7 +26,7 @@ export const updatePricingSchema = z.object({
 
 export const pricingPreviewQuerySchema = z.object({
   query: z.object({
-    vendorPrice: z.coerce.number().positive(),
+    sellingPrice: z.coerce.number().positive(),
     quantity: z.coerce.number().int().positive().max(1000).optional(),
     pricingModel,
     commissionPercent: z.coerce.number().min(0).max(100).optional(),

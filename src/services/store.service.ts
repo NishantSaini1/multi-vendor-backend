@@ -11,7 +11,7 @@ import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { assertLocationAccess, assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { findMatchingZone } from './deliveryZone.service';
-import { markupMartListing, syncSellerProductPrices, toPricingConfig } from './pricing.service';
+import { productForViewer, syncSellerProductPrices } from './pricing.service';
 import { findSellersInRange } from '../utils/geoQuery';
 import { haversineDistanceKm } from '../utils/geo';
 import { StoreType } from '../models/StoreType';
@@ -203,11 +203,9 @@ export async function getStoreProducts(id: string, user: JwtPayload, pagination:
   let enriched = await withGlobalProducts(items);
   if (isCustomer) {
     enriched = enriched.filter((p) => globalProductVisible((p.product as IInstamartGlobalProduct | undefined) ?? null));
-    // Customer sees the marked-up price under the MARKUP pricing model.
-    const pricing = toPricingConfig(store);
-    enriched = enriched.map((p) => markupMartListing(p, pricing));
   }
-  return { items: enriched, total };
+  // Only an admin sees a product's markup (see pricing.service's productForViewer).
+  return { items: enriched.map((p) => productForViewer(p, user.userType)), total };
 }
 
 export async function getStoreInventory(id: string, user: JwtPayload, pagination: PaginationParams) {

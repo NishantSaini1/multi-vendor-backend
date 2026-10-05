@@ -10,16 +10,7 @@ import { JwtPayload } from '../utils/jwt';
 import { assertOwnerOrLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { APPROVAL_STATUS, GENERIC_STATUS } from '../constants/enums';
 import { assertCategoryAndSubcategory } from './instamartGlobalProduct.service';
-import {
-  applyProductPricing,
-  hasPricingRequest,
-  pricingRequestFromInput,
-  loadPricingConfig,
-  markupMartListing,
-  markupMartListings,
-  markupMartVariant,
-  toPricingConfig,
-} from './pricing.service';
+import { applyProductPricing, hasPricingRequest, loadPricingConfig, pricingRequestFromInput, productForViewer, toPricingConfig } from './pricing.service';
 
 export function instamartProductListFilter(user: JwtPayload): Record<string, unknown> {
   if (user.userType === 'STORE') return { storeId: user.userId };
@@ -230,13 +221,9 @@ export async function listInstamartProducts(filter: Record<string, unknown>, pag
     enriched = enriched.filter((p) => globalProductVisible((p.product as IInstamartGlobalProduct | undefined) ?? null));
   }
   enriched = await withStores(enriched, (p) => (p.storeId as mongoose.Types.ObjectId).toString());
-  // A customer sees the price they'd pay — marked up under the MARKUP pricing
-  // model (see pricing.service.ts); store/admin views keep the store's price.
-  if (user.userType === 'CUSTOMER') {
-    enriched = await markupMartListings(enriched, (p) => (p.storeId as mongoose.Types.ObjectId).toString());
-    enriched = await withAvailableStock(enriched);
-  }
-  return { items: enriched, total };
+  if (user.userType === 'CUSTOMER') enriched = await withAvailableStock(enriched);
+  // Only an admin sees a product's markup (see pricing.service's productForViewer).
+  return { items: enriched.map((p) => productForViewer(p, user.userType)), total };
 }
 
 export async function createInstamartProduct(
@@ -245,11 +232,9 @@ export async function createInstamartProduct(
     productId?: string;
     newProduct?: Record<string, unknown>;
     sku?: string;
-    // COMMISSION: the Platform Selling Price (what customers pay). MARKUP: the
-    // Vendor Original Price — the selling price is then derived from the
-    // product's markup. See pricing.service's applyProductPricing.
+    // The Selling Price (what customers pay; `platformSellingPrice` is an
+    // accepted alias). Required, and never above the MRP.
     sellingPrice?: number;
-    vendorOriginalPrice?: number;
     platformSellingPrice?: number;
     // Admin-only, MARKUP stores.
     markupPercent?: number;
@@ -260,7 +245,7 @@ export async function createInstamartProduct(
 ) {
   const store = await resolveStore({ storeId: data.storeId }, user);
   const config = toPricingConfig(store);
-  const request = pricingRequestFromInput(config, data as Record<string, unknown>, 'sellingPrice');
+  const request = pricingRequestFromInput(data as Record<string, unknown>, 'sellingPrice');
 
   const session = await mongoose.startSession();
   try {
@@ -317,10 +302,9 @@ export async function createInstamartProduct(
             subcategoryId,
             sku: data.sku,
             sellingPrice: pricing.sellingPrice,
-            vendorOriginalPrice: pricing.vendorOriginalPrice,
             markupPercent: pricing.markupPercent,
             markupAmount: pricing.markupAmount,
-            platformSellingPrice: pricing.platformSellingPrice,
+            pricingSchemaVersion: 2,
             discount: data.discount ?? 0,
             sortOrder: data.sortOrder ?? 0,
           },
@@ -341,7 +325,7 @@ export async function createInstamartProduct(
         { session },
       );
     });
-    return product!;
+    return productForViewer(product!.toJSON() as Record<string, unknown>, user.userType);
   } finally {
     await session.endSession();
   }
@@ -361,12 +345,11 @@ export async function getInstamartProductById(id: string, user: JwtPayload) {
       throw ApiError.notFound('Instamart product not found', 'INSTAMART_PRODUCT_NOT_FOUND');
     }
     const withStoreInfo = await withStore(enriched, product.storeId);
-    const priced = await markupMartListing(withStoreInfo, await loadPricingConfig('STORE', product.storeId.toString()));
-    return (await withAvailableStock([priced as Record<string, unknown>]))[0];
+    return productForViewer((await withAvailableStock([withStoreInfo as Record<string, unknown>]))[0], user.userType);
   }
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
   if (!enriched) throw ApiError.notFound('Instamart product not found', 'INSTAMART_PRODUCT_NOT_FOUND');
-  return withStore(enriched, product.storeId);
+  return productForViewer(await withStore(enriched, product.storeId), user.userType);
 }
 
 // A store may only edit its own store-specific fields (price/discount/
@@ -385,7 +368,7 @@ export async function updateInstamartProduct(id: string, data: Record<string, un
   // Pricing (selling price / vendor original price / markup) is applied by
   // pricing.service so the fields stay consistent and the MRP rule is enforced.
   const config = await loadPricingConfig('STORE', product.storeId.toString());
-  const request = pricingRequestFromInput(config, data, 'sellingPrice');
+  const request = pricingRequestFromInput(data, 'sellingPrice');
 
   Object.assign(product, data);
   if (hasPricingRequest(request)) {
@@ -393,7 +376,7 @@ export async function updateInstamartProduct(id: string, data: Record<string, un
     applyProductPricing(product, 'sellingPrice', config, user, request, globalProduct?.mrp);
   }
   await product.save();
-  return product;
+  return productForViewer(product.toJSON() as Record<string, unknown>, user.userType);
 }
 
 export async function deleteInstamartProduct(id: string, user: JwtPayload) {
@@ -425,11 +408,7 @@ export async function updateInstamartProductStatus(id: string, status: string, u
 export async function listInstamartVariants(productId: string, user: JwtPayload) {
   const product = await findProductOrThrow(productId);
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
-  const variants = await InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
-  if (user.userType !== 'CUSTOMER') return variants;
-  const pricing = await loadPricingConfig('STORE', product.storeId.toString());
-  // A variant carries its product's markup %.
-  return variants.map((variant) => markupMartVariant(variant.toJSON() as Record<string, unknown>, pricing, product));
+  return InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
 }
 
 export async function createInstamartVariant(productId: string, data: Record<string, unknown>, user: JwtPayload) {

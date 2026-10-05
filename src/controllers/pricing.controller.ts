@@ -35,7 +35,7 @@ export const updateStorePricing = catchAsync(async (req: Request, res: Response)
 export const preview = catchAsync(async (req: Request, res: Response) => {
   const q = req.query as Record<string, string>;
   const result = orderFinancials.previewFinancials({
-    vendorPrice: Number(q.vendorPrice),
+    sellingPrice: Number(q.sellingPrice),
     quantity: q.quantity ? Number(q.quantity) : 1,
     config: pricingService.toPricingConfig({
       pricingModel: q.pricingModel,

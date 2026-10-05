@@ -38,14 +38,14 @@ export interface IOrderItem extends Document {
   markupAmount?: number;
   vendorSettlementAmount?: number;
   // Pricing snapshot at order time — never recomputed from the product's
-  // current markup, so a later change can't rewrite history. vendorPrice is
-  // the vendor's original unit price; platformSellingPrice what the customer
-  // paid per unit; unitMarkupAmount the markup in each unit. The three totals
-  // are line totals (all quantities, net of item discounts):
-  // totalSellingAmount - totalVendorAmount = totalAdminProfit under MARKUP.
+  // current markup, so a later change can't rewrite history. `price` is what the
+  // customer paid per unit; vendorPrice the vendor's share of it per unit
+  // (price / (1 + markup %) under MARKUP — internal); unitMarkupAmount the
+  // platform's markup profit in each unit. The totals are line totals (all
+  // quantities, net of item discounts): totalSellingAmount − totalVendorAmount
+  // = totalAdminProfit = adminProfit under MARKUP.
   markupPercent?: number;
   unitMarkupAmount?: number;
-  platformSellingPrice?: number;
   totalVendorAmount?: number;
   totalSellingAmount?: number;
   totalAdminProfit?: number;
@@ -57,9 +57,12 @@ export interface IOrderItem extends Document {
   vendorId?: Types.ObjectId;
   storeId?: Types.ObjectId;
   pricingModel?: string;
-  vendorOriginalPrice?: number;
   mrp?: number;
   discountPercent?: number;
+  // The line's customer discount (amount), and the platform's profit on it
+  // (markup profit under MARKUP, commission under COMMISSION).
+  customerDiscount?: number;
+  adminProfit?: number;
   commissionPercent?: number;
   vendorPayable?: number;
   totalAdminMarkupProfit?: number;
@@ -94,16 +97,16 @@ const orderItemSchema = new Schema<IOrderItem>(
     vendorSettlementAmount: { type: Number },
     markupPercent: { type: Number, min: 0 },
     unitMarkupAmount: { type: Number, min: 0 },
-    platformSellingPrice: { type: Number, min: 0 },
     totalVendorAmount: { type: Number, min: 0 },
     totalSellingAmount: { type: Number, min: 0 },
     totalAdminProfit: { type: Number },
     vendorId: { type: Schema.Types.ObjectId },
     storeId: { type: Schema.Types.ObjectId },
     pricingModel: { type: String },
-    vendorOriginalPrice: { type: Number, min: 0 },
     mrp: { type: Number, min: 0 },
     discountPercent: { type: Number, min: 0 },
+    customerDiscount: { type: Number, min: 0 },
+    adminProfit: { type: Number },
     commissionPercent: { type: Number, min: 0 },
     vendorPayable: { type: Number },
     totalAdminMarkupProfit: { type: Number, min: 0 },

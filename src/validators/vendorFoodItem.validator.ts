@@ -15,10 +15,8 @@ export const createVendorFoodItemSchema = z.object({
   params: z.object({ vendorId: objectId }),
   body: z.object({
     globalFoodItemId: objectId,
-    // COMMISSION: Platform Selling Price. MARKUP: Vendor Original Price (the
-    // selling price is derived). Either spelling below works too.
+    // The Selling Price (what customers pay): `price`, or `platformSellingPrice` as an alias.
     price: z.number().nonnegative().optional(),
-    vendorOriginalPrice: z.number().nonnegative().optional(),
     platformSellingPrice: z.number().nonnegative().optional(),
     // Admin-only: this item's markup % (MARKUP vendors).
     markupPercent: z.number().min(0).max(1000).optional(),
@@ -33,11 +31,9 @@ export const updateVendorFoodItemSchema = z.object({
   params: z.object({ vendorId: objectId, id: objectId }),
   body: z.object({
     price: z.number().nonnegative().optional(),
-    vendorOriginalPrice: z.number().nonnegative().optional(),
-    // COMMISSION: the Platform Selling Price. MARKUP: refused unless it equals the derived price.
+    // Alias of `price`.
     platformSellingPrice: z.number().nonnegative().optional(),
-    // Admin-only: this item's markup % (MARKUP vendors); the platform selling
-    // price and markup amount are derived from it.
+    // Admin-only: this item's markup % (MARKUP vendors) — internal, never shown to sellers or customers.
     markupPercent: z.number().min(0).max(1000).optional(),
     mrp: z.number().nonnegative().optional(),
     costPrice: z.number().nonnegative().optional(),

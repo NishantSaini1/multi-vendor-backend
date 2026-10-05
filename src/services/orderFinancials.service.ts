@@ -2,7 +2,7 @@ import { env } from '../config/env';
 import { DISCOUNT_TYPES, PRICING_MODELS } from '../constants/enums';
 import { PAYMENT_METHODS } from '../constants/paymentStatus';
 import * as commissionService from './commission.service';
-import { PricingConfig, customerUnitPrice, effectiveMarkupPercent, isMarkupModel, round2 } from './pricing.service';
+import { PricingConfig, effectiveMarkupPercent, isMarkupModel, round2, vendorShareOf } from './pricing.service';
 
 // The one pricing & settlement engine, shared by Food and Instamart orders.
 // For an order (always a single seller) it works line by line:
@@ -172,20 +172,20 @@ export function buildOrderFinancials(input: OrderFinancialsInput): OrderFinancia
   };
 }
 
-// Worked example for the admin/vendor "what would this look like" preview: one
-// line of `quantity` units at `vendorPrice`. Under MARKUP the platform price is
-// the vendor price plus `markupPercent` (the product's own markup).
+// Worked example for the admin "what would this look like" preview: one line of
+// `quantity` units at `sellingPrice`. Under MARKUP the vendor is settled
+// sellingPrice / (1 + markupPercent / 100) and the platform keeps the rest.
 export function previewFinancials(params: {
-  vendorPrice: number;
+  sellingPrice: number;
   quantity: number;
   config: PricingConfig;
   markupPercent?: number;
   deliveryFee?: number;
   paymentMethod?: string;
 }) {
-  const { vendorPrice, quantity, config } = params;
-  const unitPrice = customerUnitPrice(vendorPrice, config, { markupPercent: params.markupPercent });
-  const customerAmount = round2(unitPrice * quantity);
+  const { sellingPrice, quantity, config } = params;
+  const markupPercent = effectiveMarkupPercent(config, { markupPercent: params.markupPercent });
+  const customerAmount = round2(sellingPrice * quantity);
   const deliveryFee = params.deliveryFee ?? 0;
   const paymentMethod = params.paymentMethod ?? PAYMENT_METHODS.COD;
   const commission =
@@ -196,7 +196,7 @@ export function previewFinancials(params: {
   const { order } = buildOrderFinancials({
     config,
     commission,
-    lines: [{ customerAmount, vendorAmount: round2(vendorPrice * quantity) }],
+    lines: [{ customerAmount, vendorAmount: vendorShareOf(customerAmount, markupPercent) }],
     deliveryFee,
     platformFee: 0,
     couponDiscount: 0,
@@ -204,14 +204,12 @@ export function previewFinancials(params: {
     paymentMethod,
   });
   return {
-    vendorOriginalPrice: vendorPrice,
-    markupPercent: effectiveMarkupPercent(config, { markupPercent: params.markupPercent }),
-    platformSellingPrice: unitPrice,
-    markupPerUnit: round2(unitPrice - vendorPrice),
+    sellingPrice,
+    markupPercent,
+    // the platform's markup profit per unit (0 unless MARKUP)
+    markupPerUnit: isMarkupModel(config) ? round2(sellingPrice - vendorShareOf(sellingPrice, markupPercent)) : 0,
     quantity,
     ...order,
   };
 }
 
-// Re-exported for callers that only need the default-markup unit price.
-export { customerUnitPrice };

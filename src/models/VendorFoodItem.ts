@@ -11,23 +11,19 @@ export interface IVendorFoodItem extends Document {
   _id: Types.ObjectId;
   vendorId: Types.ObjectId;
   globalFoodItemId: Types.ObjectId;
-  // Platform Selling Price — what the customer pays for this item, for BOTH
-  // pricing models (never greater than the MRP). Under COMMISSION the seller
-  // sets it; under MARKUP it is derived: vendorOriginalPrice + markupAmount.
+  // Selling Price — what the customer pays for this item, for BOTH pricing
+  // models (never greater than the MRP). The seller sets it.
   price: number;
-  // The vendor's own (original) price, before any platform earning. Under
-  // MARKUP the vendor is settled this; under COMMISSION it is informational
-  // (settlement is selling price minus commission, as before).
-  vendorOriginalPrice?: number;
-  // MARKUP pricing model: this item's own markup percentage, set by the
-  // platform; markupAmount = vendorOriginalPrice × markupPercent / 100 and
-  // price = vendorOriginalPrice + markupAmount, all kept in sync by
-  // pricing.service. Under COMMISSION the effective markup is 0.
+  // MARKUP pricing model, internal to the platform (admins only): this item's
+  // own markup %, and the platform's profit per unit it implies —
+  // markupAmount = price − price / (1 + markupPercent / 100), kept in sync by
+  // pricing.service. Never shown to customers or sellers. Under COMMISSION the
+  // effective markup is 0.
   markupPercent: number;
   markupAmount: number;
-  // Mirror of `price` under its business name, so APIs can speak in terms of
-  // Platform Selling Price. Always written together with `price`.
-  platformSellingPrice?: number;
+  // 2 = priced in the current model (selling price stored, markup internal). Products
+  // without it predate it and are converted by the migrate:product-markup script.
+  pricingSchemaVersion?: number;
   mrp?: number;
   costPrice?: number;
   availabilityStatus: string;
@@ -43,10 +39,9 @@ const vendorFoodItemSchema = new Schema<IVendorFoodItem>(
     vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', required: true, index: true },
     globalFoodItemId: { type: Schema.Types.ObjectId, ref: 'FoodProduct', required: true, index: true },
     price: { type: Number, required: true, min: 0 },
-    vendorOriginalPrice: { type: Number, min: 0 },
     markupPercent: { type: Number, default: 0, min: 0, max: 1000 },
-    platformSellingPrice: { type: Number, min: 0 },
     markupAmount: { type: Number, default: 0, min: 0 },
+    pricingSchemaVersion: { type: Number },
     mrp: { type: Number, min: 0 },
     costPrice: { type: Number, min: 0 },
     availabilityStatus: {
