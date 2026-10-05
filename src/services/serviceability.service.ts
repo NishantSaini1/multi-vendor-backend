@@ -5,6 +5,7 @@ import { haversineDistanceKm } from '../utils/geo';
 import { GENERIC_STATUS, VENDOR_STATUS, STORE_STATUS } from '../constants/enums';
 import { BUSINESS_TYPES, BusinessType } from '../constants/orderStatus';
 import { findMatchingZone } from './deliveryZone.service';
+import { DeliveryCapacity, getDeliveryCapacity } from './deliveryCapacity.service';
 
 export interface ServiceabilityResult {
   serviceable: boolean;
@@ -16,6 +17,21 @@ export interface ServiceabilityResult {
   // Only when a specific seller was checked (vendorId / storeId).
   sellerDistanceKm?: number;
   sellerServiceRadiusKm?: number;
+  // Whether a delivery partner is free to take an order right now. Separate
+  // from `serviceable` (the area/seller is still served): when false the apps
+  // show the "high demand" state and block add-to-cart / checkout. Only set on
+  // serviceable results.
+  deliveryAvailable?: boolean;
+  deliveryCapacity?: DeliveryCapacity;
+}
+
+async function withCapacity<T extends { serviceable: boolean }>(
+  result: T,
+  locationId: string,
+  pickup?: { latitude: number; longitude: number },
+): Promise<T & { deliveryAvailable: boolean; deliveryCapacity: DeliveryCapacity }> {
+  const deliveryCapacity = await getDeliveryCapacity({ locationId, pickup });
+  return { ...result, deliveryAvailable: deliveryCapacity.available, deliveryCapacity };
 }
 
 export interface ServiceabilitySeller {
@@ -128,7 +144,10 @@ export async function checkServiceability(
     }
     // Compute dynamic fee: fixed base + (actual distance × per-km rate).
     const dynamicFee = Math.round((zone.deliveryFee + sellerDistanceKm * (zone.perKmCharge ?? 0)) * 100) / 100;
-    return { serviceable: true, ...base, deliveryFee: dynamicFee, sellerDistanceKm, sellerServiceRadiusKm };
+    return withCapacity({ serviceable: true, ...base, deliveryFee: dynamicFee, sellerDistanceKm, sellerServiceRadiusKm }, location.id, {
+      latitude: vendor.latitude,
+      longitude: vendor.longitude,
+    });
   }
   if (businessType === BUSINESS_TYPES.INSTAMART && seller.storeId) {
     // Same rule as a restaurant: same location, and the address within the
@@ -144,8 +163,12 @@ export async function checkServiceability(
     }
     // Compute dynamic fee: fixed base + (actual distance × per-km rate).
     const dynamicFee = Math.round((zone.deliveryFee + sellerDistanceKm * (zone.perKmCharge ?? 0)) * 100) / 100;
-    return { serviceable: true, ...base, deliveryFee: dynamicFee, sellerDistanceKm, sellerServiceRadiusKm };
+    return withCapacity({ serviceable: true, ...base, deliveryFee: dynamicFee, sellerDistanceKm, sellerServiceRadiusKm }, location.id, {
+      latitude: store.latitude,
+      longitude: store.longitude,
+    });
   }
 
-  return { serviceable: true, ...base };
+  // No specific seller: a location-wide answer (any free partner in the location).
+  return withCapacity({ serviceable: true, ...base }, location.id);
 }

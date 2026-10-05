@@ -24,6 +24,7 @@ import { checkServiceability } from './serviceability.service';
 import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
 import { customerUnitPrice, loadPricingConfig, platformPriceFor } from './pricing.service';
+import { assertDeliveryCapacity } from './deliveryCapacity.service';
 import { buildOrderFinancials, resolveSellerCommission } from './orderFinancials.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { FOOD_ORDER_TRANSITIONS, INSTAMART_ORDER_TRANSITIONS } from '../constants/orderStatus';
@@ -304,6 +305,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
   let vendorId: string | undefined;
   let storeId: string | undefined;
   let deliveryDistanceKm = 0;
+  let pickupPoint: { latitude: number; longitude: number };
 
   if (businessType === BUSINESS_TYPES.FOOD) {
     const vendor = await Vendor.findById(vendorIdInput);
@@ -326,6 +328,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
     }
     vendorId = vendor.id;
     deliveryDistanceKm = distanceKm;
+    pickupPoint = { latitude: vendor.latitude, longitude: vendor.longitude };
   } else {
     const store = await Store.findById(data.storeId);
     if (!store) throw ApiError.notFound('Store not found', 'STORE_NOT_FOUND');
@@ -344,7 +347,13 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
     }
     storeId = store.id;
     deliveryDistanceKm = storeDistanceKm;
+    pickupPoint = { latitude: store.latitude, longitude: store.longitude };
   }
+
+  // No free delivery partner near the seller: we can't take the order right
+  // now (503 DELIVERY_UNAVAILABLE — the apps show the high-demand screen). See
+  // deliveryCapacity.service.ts; an admin can tune or override this per location.
+  await assertDeliveryCapacity({ locationId: location.id, pickup: pickupPoint });
 
   const preparedItems =
     businessType === BUSINESS_TYPES.FOOD ? await prepareFoodItems(vendorId!, items) : await prepareInstamartItems(storeId!, items);

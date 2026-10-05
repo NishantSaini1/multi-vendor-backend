@@ -2,6 +2,16 @@ import { Cart, ICart } from '../models/Cart';
 import { CartItem, ICartItem } from '../models/CartItem';
 import { ApiError } from '../utils/ApiError';
 import { resolveFoodLineItem } from './foodPricing.service';
+import { assertDeliveryCapacity } from './deliveryCapacity.service';
+import { Vendor } from '../models/Vendor';
+
+// With no delivery partner free, nothing new may be added (or increased) — the
+// customer sees the high-demand screen instead. Removing items always works.
+async function assertCanDeliverFrom(vendorId: string): Promise<void> {
+  const vendor = await Vendor.findById(vendorId).select('locationId latitude longitude');
+  if (!vendor) return;
+  await assertDeliveryCapacity({ locationId: vendor.locationId.toString(), pickup: { latitude: vendor.latitude, longitude: vendor.longitude } });
+}
 
 interface AddCartItemInput {
   vendorFoodItemId: string;
@@ -84,6 +94,7 @@ export async function addItem(customerId: string, data: AddCartItemInput) {
   const cart = await getOrCreateCart(customerId);
   const resolved = await priceLine(data);
   const vendorId = resolved.vendorFoodItem.vendorId.toString();
+  await assertCanDeliverFrom(vendorId);
 
   if (cart.vendorId && cart.vendorId.toString() !== vendorId) {
     throw new ApiError(
@@ -143,6 +154,8 @@ export async function updateItemQuantity(customerId: string, cartItemId: string,
     variantId: item.variantId?.toString(),
     selectedModifierOptionIds: item.selectedModifierOptionIds.map((id) => id.toString()),
   });
+
+  if (quantity > item.quantity) await assertCanDeliverFrom(resolved.vendorFoodItem.vendorId.toString());
 
   item.quantity = quantity;
   item.basePrice = resolved.unitPrice;
