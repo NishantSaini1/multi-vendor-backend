@@ -71,6 +71,9 @@ export interface IOrder extends Document {
   couponExpense?: number;
   platformExpenses?: number;
   platformNetProfit?: number;
+  // Share of the order's payment refunded so far (0–1). The profit reports
+  // reverse that share of the order's markup profit / commission revenue.
+  refundRatio?: number;
   paymentId?: Types.ObjectId;
   paymentMethod: string;
   paymentStatus: string;
@@ -133,6 +136,7 @@ const orderSchema = new Schema<IOrder>(
     couponExpense: { type: Number, min: 0 },
     platformExpenses: { type: Number },
     platformNetProfit: { type: Number },
+    refundRatio: { type: Number, min: 0, max: 1 },
     paymentId: { type: Schema.Types.ObjectId, ref: 'Payment' },
     paymentMethod: { type: String, enum: Object.values(PAYMENT_METHODS), required: true },
     paymentStatus: { type: String, enum: Object.values(PAYMENT_STATUS), default: PAYMENT_STATUS.PENDING },

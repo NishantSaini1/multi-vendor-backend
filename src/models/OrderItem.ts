@@ -49,6 +49,20 @@ export interface IOrderItem extends Document {
   totalVendorAmount?: number;
   totalSellingAmount?: number;
   totalAdminProfit?: number;
+  // Also snapshotted: the vendor/store the line belongs to, the pricing model
+  // it was sold under, the printed MRP and discount % at the time, and the
+  // settlement outcome — commissionPercent/commissionAmount under COMMISSION
+  // (the existing commission snapshot), totalAdminMarkupProfit under MARKUP;
+  // vendorPayable is what the seller is owed for the line.
+  vendorId?: Types.ObjectId;
+  storeId?: Types.ObjectId;
+  pricingModel?: string;
+  vendorOriginalPrice?: number;
+  mrp?: number;
+  discountPercent?: number;
+  commissionPercent?: number;
+  vendorPayable?: number;
+  totalAdminMarkupProfit?: number;
   quantity: number;
   modifiers: IOrderItemModifier[];
   itemTotal: number;
@@ -84,6 +98,15 @@ const orderItemSchema = new Schema<IOrderItem>(
     totalVendorAmount: { type: Number, min: 0 },
     totalSellingAmount: { type: Number, min: 0 },
     totalAdminProfit: { type: Number },
+    vendorId: { type: Schema.Types.ObjectId },
+    storeId: { type: Schema.Types.ObjectId },
+    pricingModel: { type: String },
+    vendorOriginalPrice: { type: Number, min: 0 },
+    mrp: { type: Number, min: 0 },
+    discountPercent: { type: Number, min: 0 },
+    commissionPercent: { type: Number, min: 0 },
+    vendorPayable: { type: Number },
+    totalAdminMarkupProfit: { type: Number, min: 0 },
     quantity: { type: Number, required: true, min: 1 },
     modifiers: { type: [orderItemModifierSchema], default: [] },
     itemTotal: { type: Number, required: true, min: 0 },

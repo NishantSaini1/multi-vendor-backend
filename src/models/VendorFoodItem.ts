@@ -11,16 +11,23 @@ export interface IVendorFoodItem extends Document {
   _id: Types.ObjectId;
   vendorId: Types.ObjectId;
   globalFoodItemId: Types.ObjectId;
-  // The vendor's own (original) price for this item.
+  // Platform Selling Price — what the customer pays for this item, for BOTH
+  // pricing models (never greater than the MRP). Under COMMISSION the seller
+  // sets it; under MARKUP it is derived: vendorOriginalPrice + markupAmount.
   price: number;
+  // The vendor's own (original) price, before any platform earning. Under
+  // MARKUP the vendor is settled this; under COMMISSION it is informational
+  // (settlement is selling price minus commission, as before).
+  vendorOriginalPrice?: number;
   // MARKUP pricing model: this item's own markup percentage, set by the
-  // platform. markupAmount and platformSellingPrice are derived from it
-  // (platformSellingPrice = original price + markupAmount) and kept in sync by
-  // pricing.service. markupPercent is what an admin configures; the other two
-  // are what customers pay. Under COMMISSION the effective markup is 0.
+  // platform; markupAmount = vendorOriginalPrice × markupPercent / 100 and
+  // price = vendorOriginalPrice + markupAmount, all kept in sync by
+  // pricing.service. Under COMMISSION the effective markup is 0.
   markupPercent: number;
-  platformSellingPrice?: number;
   markupAmount: number;
+  // Mirror of `price` under its business name, so APIs can speak in terms of
+  // Platform Selling Price. Always written together with `price`.
+  platformSellingPrice?: number;
   mrp?: number;
   costPrice?: number;
   availabilityStatus: string;
@@ -36,6 +43,7 @@ const vendorFoodItemSchema = new Schema<IVendorFoodItem>(
     vendorId: { type: Schema.Types.ObjectId, ref: 'Vendor', required: true, index: true },
     globalFoodItemId: { type: Schema.Types.ObjectId, ref: 'FoodProduct', required: true, index: true },
     price: { type: Number, required: true, min: 0 },
+    vendorOriginalPrice: { type: Number, min: 0 },
     markupPercent: { type: Number, default: 0, min: 0, max: 1000 },
     platformSellingPrice: { type: Number, min: 0 },
     markupAmount: { type: Number, default: 0, min: 0 },

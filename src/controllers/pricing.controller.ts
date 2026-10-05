@@ -84,6 +84,7 @@ function profitFilters(req: Request): financialReport.ProfitFilters {
     sellerId: q.sellerId,
     productId: q.productId,
     categoryId: q.categoryId,
+    subcategoryId: q.subcategoryId,
     pricingModel: q.pricingModel,
     status: q.status,
     range,

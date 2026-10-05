@@ -5,7 +5,7 @@ import { ModifierGroup } from '../models/ModifierGroup';
 import { ModifierOption } from '../models/ModifierOption';
 import { IOrderItemModifier } from '../models/OrderItem';
 import { ApiError } from '../utils/ApiError';
-import { customerModifierPrice, customerUnitPrice, effectiveMarkupPercent, loadPricingConfig, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
+import { customerModifierPrice, customerUnitPrice, loadPricingConfig, resolveBasePricing, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
 import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 // Single source of truth for "resolve + validate + price one Food line item"
@@ -29,6 +29,8 @@ export interface ResolvedFoodLineItem {
   vendorUnitPrice: number;
   // The item's own markup % in effect (0 unless the vendor is on MARKUP).
   markupPercent: number;
+  // The printed MRP, when the vendor set one.
+  mrp?: number;
   modifiers: IOrderItemModifier[];
   modifiersUnitTotal: number;
   vendorModifiersUnitTotal: number;
@@ -145,7 +147,13 @@ export async function resolveFoodLineItem(
     throw ApiError.unprocessable('This item is not currently available', 'PRODUCT_NOT_AVAILABLE');
   }
 
-  let vendorUnitPrice = vendorFoodItem.price;
+  // The item's own price: the stored Platform Selling Price is what the
+  // customer pays and vendorOriginalPrice what the vendor is settled (see
+  // pricing.service's resolveBasePricing). A variant carries the item's markup %.
+  const pricing = await loadPricingConfig('VENDOR', vendorFoodItem.vendorId.toString());
+  const base = resolveBasePricing(vendorFoodItem.price, pricing, vendorFoodItem);
+  let unitPrice = base.sellingPrice;
+  let vendorUnitPrice = base.vendorOriginalPrice;
   let variant: IFoodVariant | undefined;
   if (input.variantId) {
     const found = await FoodVariant.findById(input.variantId);
@@ -157,11 +165,8 @@ export async function resolveFoodLineItem(
     }
     variant = found;
     vendorUnitPrice = found.price;
+    unitPrice = customerUnitPrice(found.price, pricing, vendorFoodItem);
   }
-
-  const pricing = await loadPricingConfig('VENDOR', vendorFoodItem.vendorId.toString());
-  // The item's own price, and any variant of it, carry the item's markup %.
-  const unitPrice = customerUnitPrice(vendorUnitPrice, pricing, vendorFoodItem);
 
   const {
     snapshots: modifiers,
@@ -176,7 +181,8 @@ export async function resolveFoodLineItem(
     name: globalItem.name,
     unitPrice,
     vendorUnitPrice,
-    markupPercent: effectiveMarkupPercent(pricing, vendorFoodItem),
+    markupPercent: base.markupPercent,
+    mrp: vendorFoodItem.mrp,
     modifiers,
     modifiersUnitTotal,
     vendorModifiersUnitTotal,

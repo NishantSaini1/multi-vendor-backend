@@ -149,6 +149,7 @@ export interface ProfitFilters {
   sellerId?: string;
   productId?: string;
   categoryId?: string;
+  subcategoryId?: string;
   pricingModel?: string;
   // An order status, or 'ALL'. Defaults to DELIVERED (realised profit).
   status?: string;
@@ -157,32 +158,53 @@ export interface ProfitFilters {
 
 export interface ProfitMetrics {
   itemsSold: number;
-  // What the seller is paid for the items (their original price under MARKUP,
-  // the sale minus commission under COMMISSION).
+  // What the platform pays for the items: the vendor's original price under
+  // MARKUP, and what the vendor is paid (sale minus commission) under COMMISSION.
   vendorCost: number;
-  // What customers paid for the items, net of item discounts.
+  // What customers paid for the items, net of item discounts and refunds.
   customerSales: number;
-  // MARKUP PROFIT — the markup baked into the price (MARKUP sellers only).
+  // MARKUP PROFIT — the markup baked into the price (MARKUP sellers only), net of refunds.
   markupProfit: number;
-  // COMMISSION REVENUE — the commission kept (COMMISSION sellers only).
+  // COMMISSION REVENUE — the commission kept (COMMISSION sellers only), net of refunds.
   commissionRevenue: number;
-  // markupProfit + commissionRevenue. vendorCost + adminProfit = customerSales.
+  // markupProfit + commissionRevenue.
   adminProfit: number;
+  // What the vendor/store is owed for the items, before settlement adjustments
+  // (their original price under MARKUP, the sale minus commission under COMMISSION).
+  vendorPayable: number;
 }
 
-const emptyMetrics = (): ProfitMetrics => ({ itemsSold: 0, vendorCost: 0, customerSales: 0, markupProfit: 0, commissionRevenue: 0, adminProfit: 0 });
+const emptyMetrics = (): ProfitMetrics => ({
+  itemsSold: 0,
+  vendorCost: 0,
+  customerSales: 0,
+  markupProfit: 0,
+  commissionRevenue: 0,
+  adminProfit: 0,
+  vendorPayable: 0,
+});
+
+// The share of an order that has NOT been refunded. Refunds reverse the same
+// share of the markup profit / commission revenue and of the sale; an order
+// refunded in full counts no items. (Vendor payable is not clawed back — there is
+// no refund clawback in settlement — so it is left as it was.)
+const KEEP = { $subtract: [1, { $ifNull: ['$order.refundRatio', 0] }] };
+const PAYABLE = { $ifNull: ['$vendorPayable', { $ifNull: ['$vendorSettlementAmount', 0] }] };
 
 const ITEM_SUMS = {
-  itemsSold: { $sum: '$quantity' },
-  vendorCost: { $sum: { $ifNull: ['$vendorSettlementAmount', 0] } },
-  customerSales: { $sum: { $ifNull: ['$totalSellingAmount', 0] } },
-  markupProfit: { $sum: { $ifNull: ['$markupAmount', 0] } },
-  commissionRevenue: { $sum: { $ifNull: ['$commissionAmount', 0] } },
+  itemsSold: { $sum: { $cond: [{ $lte: [KEEP, 0] }, 0, '$quantity'] } },
+  vendorCost: {
+    $sum: { $cond: [{ $eq: ['$order.pricingModel', 'MARKUP'] }, { $ifNull: ['$totalVendorAmount', 0] }, PAYABLE] },
+  },
+  vendorPayable: { $sum: PAYABLE },
+  customerSales: { $sum: { $multiply: [{ $ifNull: ['$totalSellingAmount', 0] }, KEEP] } },
+  markupProfit: { $sum: { $multiply: [{ $ifNull: ['$markupAmount', 0] }, KEEP] } },
+  commissionRevenue: { $sum: { $multiply: [{ $ifNull: ['$commissionAmount', 0] }, KEEP] } },
 };
 
 function toMetrics(row: Record<string, unknown>): ProfitMetrics {
   const m = emptyMetrics();
-  for (const key of ['itemsSold', 'vendorCost', 'customerSales', 'markupProfit', 'commissionRevenue'] as const) {
+  for (const key of ['itemsSold', 'vendorCost', 'vendorPayable', 'customerSales', 'markupProfit', 'commissionRevenue'] as const) {
     const value = row[key];
     m[key] = typeof value === 'number' ? (key === 'itemsSold' ? value : round2(value)) : 0;
   }
@@ -195,6 +217,7 @@ function sumMetrics(rows: ProfitMetrics[]): ProfitMetrics {
   for (const r of rows) {
     total.itemsSold += r.itemsSold;
     total.vendorCost = round2(total.vendorCost + r.vendorCost);
+    total.vendorPayable = round2(total.vendorPayable + r.vendorPayable);
     total.customerSales = round2(total.customerSales + r.customerSales);
     total.markupProfit = round2(total.markupProfit + r.markupProfit);
     total.commissionRevenue = round2(total.commissionRevenue + r.commissionRevenue);
@@ -203,12 +226,16 @@ function sumMetrics(rows: ProfitMetrics[]): ProfitMetrics {
   return total;
 }
 
-// Product ids (the listing ids order items carry) in a category, across Food and Instamart.
-async function productIdsInCategory(categoryId: string): Promise<Types.ObjectId[]> {
-  const foodGlobals = await FoodProduct.find({ categoryId }).distinct('_id');
+// Product ids (the listing ids order items carry) in a category and/or
+// subcategory, across Food and Instamart.
+async function productIdsInCategory(categoryId?: string, subcategoryId?: string): Promise<Types.ObjectId[]> {
+  const where: Record<string, string> = {};
+  if (categoryId) where.categoryId = categoryId;
+  if (subcategoryId) where.subcategoryId = subcategoryId;
+  const foodGlobals = await FoodProduct.find(where).distinct('_id');
   const [foodListings, martListings] = await Promise.all([
     foodGlobals.length ? VendorFoodItem.find({ globalFoodItemId: { $in: foodGlobals } }).distinct('_id') : [],
-    InstamartProduct.find({ categoryId }).distinct('_id'),
+    InstamartProduct.find(where).distinct('_id'),
   ]);
   return [...foodListings, ...martListings] as Types.ObjectId[];
 }
@@ -218,7 +245,9 @@ async function productIdsInCategory(categoryId: string): Promise<Types.ObjectId[
 async function itemPipeline(filters: ProfitFilters): Promise<PipelineStage[]> {
   const itemMatch: Record<string, unknown> = { totalSellingAmount: { $exists: true } };
   if (filters.productId) itemMatch.productId = new Types.ObjectId(filters.productId);
-  if (filters.categoryId) itemMatch.productId = { $in: await productIdsInCategory(filters.categoryId) };
+  if (filters.categoryId || filters.subcategoryId) {
+    itemMatch.productId = { $in: await productIdsInCategory(filters.categoryId, filters.subcategoryId) };
+  }
 
   const orderMatch: Record<string, unknown> = { ...castIds(filters.scope), platformNetProfit: { $exists: true } };
   if (filters.status !== 'ALL') orderMatch.status = filters.status ?? FOOD_ORDER_STATUS.DELIVERED;
@@ -273,6 +302,7 @@ export async function getSellerFinancials(filters: ProfitFilters) {
         totalOrders: { $sum: 1 },
         itemsSold: { $sum: '$itemsSold' },
         vendorCost: { $sum: '$vendorCost' },
+        vendorPayable: { $sum: '$vendorPayable' },
         customerSales: { $sum: '$customerSales' },
         markupProfit: { $sum: '$markupProfit' },
         commissionRevenue: { $sum: '$commissionRevenue' },
@@ -314,33 +344,30 @@ export async function getSellerFinancials(filters: ProfitFilters) {
 
 // --- A seller's own view ------------------------------------------------------
 // What a vendor/store may see of its own sales: what customers paid, what it is
-// paid, and the commission or markup applied — never the platform's profit.
+// paid, and the commission taken — never the platform's profit, which includes
+// the markup it made on the seller's products.
 
 export interface SellerEarningsMetrics {
   itemsSold: number;
   // What customers paid for the items, net of item discounts.
   customerPaid: number;
-  // What the seller is paid for them.
+  // What the seller is owed for them.
   youReceive: number;
   // Commission taken (COMMISSION model).
   commission: number;
-  // Markup added on top of the seller's price (MARKUP model) — the seller still
-  // receives its own price.
-  markup: number;
 }
 
 function toSellerMetrics(m: ProfitMetrics): SellerEarningsMetrics {
-  return { itemsSold: m.itemsSold, customerPaid: m.customerSales, youReceive: m.vendorCost, commission: m.commissionRevenue, markup: m.markupProfit };
+  return { itemsSold: m.itemsSold, customerPaid: m.customerSales, youReceive: m.vendorPayable, commission: m.commissionRevenue };
 }
 
 function sumSellerMetrics(rows: SellerEarningsMetrics[]): SellerEarningsMetrics {
-  const total: SellerEarningsMetrics = { itemsSold: 0, customerPaid: 0, youReceive: 0, commission: 0, markup: 0 };
+  const total: SellerEarningsMetrics = { itemsSold: 0, customerPaid: 0, youReceive: 0, commission: 0 };
   for (const r of rows) {
     total.itemsSold += r.itemsSold;
     total.customerPaid = round2(total.customerPaid + r.customerPaid);
     total.youReceive = round2(total.youReceive + r.youReceive);
     total.commission = round2(total.commission + r.commission);
-    total.markup = round2(total.markup + r.markup);
   }
   return total;
 }
@@ -394,6 +421,11 @@ export async function getOwnOrderEarnings(sellerId: string, query: { productId?:
 export interface ProductProfitRow extends ProfitMetrics {
   productId: string;
   name: string;
+  // The seller that sold it.
+  businessType: string;
+  sellerType: 'VENDOR' | 'STORE';
+  sellerId: string;
+  sellerName: string;
   pricingModel: string;
   orders: number;
   // Weighted markup % actually charged over the period (from the order
@@ -447,7 +479,13 @@ export async function getSellerProducts(filters: ProfitFilters) {
     ...(await itemPipeline(filters)),
     {
       $group: {
-        _id: { productId: '$productId', pricingModel: '$order.pricingModel' },
+        _id: {
+          productId: '$productId',
+          pricingModel: '$order.pricingModel',
+          businessType: '$order.businessType',
+          vendorId: '$order.vendorId',
+          storeId: '$order.storeId',
+        },
         name: { $last: '$name' },
         orderIds: { $addToSet: '$orderId' },
         ...ITEM_SUMS,
@@ -458,6 +496,16 @@ export async function getSellerProducts(filters: ProfitFilters) {
   ]);
 
   const current = await currentListings(rows.map((r) => r._id.productId as Types.ObjectId));
+  const vendorIds = rows.map((r) => r._id.vendorId).filter(Boolean);
+  const storeIds = rows.map((r) => r._id.storeId).filter(Boolean);
+  const [vendors, stores] = await Promise.all([
+    vendorIds.length ? Vendor.find({ _id: { $in: vendorIds } }).select('restaurantName') : [],
+    storeIds.length ? Store.find({ _id: { $in: storeIds } }).select('name') : [],
+  ]);
+  const sellerNames = new Map<string, string>([
+    ...vendors.map((v) => [v.id as string, v.restaurantName] as [string, string]),
+    ...stores.map((s) => [s.id as string, s.name] as [string, string]),
+  ]);
   const result: ProductProfitRow[] = rows.map((row) => {
     const metrics = toMetrics(row);
     // Vendor base the markup was added to = what the vendor was paid under MARKUP.
@@ -465,6 +513,10 @@ export async function getSellerProducts(filters: ProfitFilters) {
     return {
       productId: String(row._id.productId),
       name: row.name as string,
+      businessType: row._id.businessType as string,
+      sellerType: row._id.vendorId ? 'VENDOR' : 'STORE',
+      sellerId: String(row._id.vendorId ?? row._id.storeId),
+      sellerName: sellerNames.get(String(row._id.vendorId ?? row._id.storeId)) ?? 'Unknown',
       pricingModel: row._id.pricingModel as string,
       orders: (row.orderIds as unknown[]).length,
       markupPercent,

@@ -23,7 +23,7 @@ import { generateOrderNumber } from '../utils/orderNumber';
 import { checkServiceability } from './serviceability.service';
 import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
-import { customerUnitPrice, effectiveMarkupPercent, loadPricingConfig } from './pricing.service';
+import { customerUnitPrice, isMarkupModel, loadPricingConfig, resolveBasePricing } from './pricing.service';
 import { assertDeliveryCapacity } from './deliveryCapacity.service';
 import { buildOrderFinancials, resolveSellerCommission } from './orderFinancials.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
@@ -77,8 +77,10 @@ interface PreparedOrderItem {
   vendorLineSubtotal: number;
   vendorLineDiscount: number;
   // The product's own markup % in effect (0 unless the seller is on MARKUP) —
-  // snapshotted onto the order item.
+  // snapshotted onto the order item, with the printed MRP and discount %.
   markupPercent: number;
+  mrp?: number;
+  discountPercent: number;
   quantity: number;
   modifiers: IOrderItemModifier[];
   itemTotal: number;
@@ -152,6 +154,8 @@ async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[])
       price: resolved.unitPrice,
       vendorPrice: resolved.vendorUnitPrice,
       markupPercent: resolved.markupPercent,
+      mrp: resolved.mrp,
+      discountPercent: 0,
       vendorLineSubtotal: vendorLine.lineSubtotal,
       vendorLineDiscount: vendorLine.lineDiscount,
       quantity: input.quantity,
@@ -201,7 +205,12 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
     // sellingPrice/mrp (its own pack size/unit) is always a valid, orderable
     // choice in its own right, same as any named variant — variants are
     // additional pack-size options alongside it, not a replacement for it.
-    let vendorUnitPrice = product.sellingPrice;
+    // The product's own pack: the stored Platform Selling Price is what the
+    // customer pays, vendorOriginalPrice what the store is settled. A variant
+    // carries the product's markup %.
+    const base = resolveBasePricing(product.sellingPrice, pricing, product);
+    let unitPrice = base.sellingPrice;
+    let vendorUnitPrice = base.vendorOriginalPrice;
     if (input.variantId) {
       const variant = await InstamartVariant.findById(input.variantId);
       if (!variant || variant.productId.toString() !== product.id) {
@@ -211,9 +220,8 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
         throw ApiError.unprocessable(`${globalProduct.name} (${variant.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
       }
       vendorUnitPrice = variant.sellingPrice;
+      unitPrice = customerUnitPrice(variant.sellingPrice, pricing, product);
     }
-    // The product's own pack, and any variant of it, carry the product's markup %.
-    const unitPrice = customerUnitPrice(vendorUnitPrice, pricing, product);
 
     // Authoritative stock check happens again inside the transaction below;
     // this pre-check just fails fast for the common case.
@@ -236,7 +244,9 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       name: globalProduct.name,
       price: unitPrice,
       vendorPrice: vendorUnitPrice,
-      markupPercent: effectiveMarkupPercent(pricing, product),
+      markupPercent: base.markupPercent,
+      mrp: globalProduct.mrp,
+      discountPercent: product.discount ?? 0,
       vendorLineSubtotal: vendorLine.lineSubtotal,
       vendorLineDiscount: vendorLine.lineDiscount,
       quantity: input.quantity,
@@ -551,12 +561,24 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           vendorSettlementAmount: financials.lines[index].vendorSettlementAmount,
           // Pricing snapshot — what this line was priced at the moment of the order.
           markupPercent: item.markupPercent,
-          unitMarkupAmount: Math.max(0, Math.round((item.price - item.vendorPrice + Number.EPSILON) * 100) / 100),
+          // Markup only exists under MARKUP — under COMMISSION the vendor's original
+          // price is informational and the platform's cut is the commission.
+          unitMarkupAmount: isMarkupModel(pricingConfig) ? Math.max(0, Math.round((item.price - item.vendorPrice + Number.EPSILON) * 100) / 100) : 0,
           platformSellingPrice: item.price,
           totalVendorAmount: Math.round((item.vendorLineSubtotal - item.vendorLineDiscount + Number.EPSILON) * 100) / 100,
           totalSellingAmount: Math.round((item.lineSubtotal - item.lineDiscount + Number.EPSILON) * 100) / 100,
           totalAdminProfit:
             Math.round((financials.lines[index].markupAmount + financials.lines[index].commissionAmount + Number.EPSILON) * 100) / 100,
+          // The rest of the snapshot: who sold it, under which model, and at what MRP / discount.
+          vendorId,
+          storeId,
+          pricingModel: financials.order.pricingModel,
+          vendorOriginalPrice: item.vendorPrice,
+          mrp: item.mrp,
+          discountPercent: item.discountPercent,
+          commissionPercent: financials.order.commissionType === 'PERCENTAGE' ? financials.order.commissionRate : undefined,
+          vendorPayable: financials.lines[index].vendorSettlementAmount,
+          totalAdminMarkupProfit: financials.lines[index].markupAmount,
           quantity: item.quantity,
           modifiers: item.modifiers,
           itemTotal: item.itemTotal,

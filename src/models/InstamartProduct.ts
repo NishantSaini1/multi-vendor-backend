@@ -14,16 +14,22 @@ export interface IInstamartProduct extends Document {
   categoryId: Types.ObjectId;
   subcategoryId?: Types.ObjectId;
   sku?: string;
-  // The store's own (original) selling price.
+  // Platform Selling Price — what the customer pays, for BOTH pricing models
+  // (never greater than the product's printed MRP). Under COMMISSION the store
+  // sets it; under MARKUP it is derived: vendorOriginalPrice + markupAmount.
   sellingPrice: number;
+  // The store's own (original) price, before any platform earning. Under
+  // MARKUP the store is settled this; under COMMISSION it is informational.
+  vendorOriginalPrice?: number;
   // MARKUP pricing model: this product's own markup percentage, set by the
-  // platform. markupAmount and platformSellingPrice are derived from it
-  // (platformSellingPrice = original price + markupAmount) and kept in sync by
-  // pricing.service. markupPercent is what an admin configures; the other two
-  // are what customers pay. Under COMMISSION the effective markup is 0.
+  // platform; markupAmount = vendorOriginalPrice × markupPercent / 100 and
+  // sellingPrice = vendorOriginalPrice + markupAmount, all kept in sync by
+  // pricing.service. Under COMMISSION the effective markup is 0.
   markupPercent: number;
-  platformSellingPrice?: number;
   markupAmount: number;
+  // Mirror of `sellingPrice` under its business name, so APIs can speak in
+  // terms of Platform Selling Price. Always written together with it.
+  platformSellingPrice?: number;
   discount: number;
   sortOrder: number;
   status: string;
@@ -43,6 +49,7 @@ const instamartProductSchema = new Schema<IInstamartProduct>(
     subcategoryId: { type: Schema.Types.ObjectId, ref: 'InstamartSubcategory' },
     sku: { type: String },
     sellingPrice: { type: Number, required: true, min: 0 },
+    vendorOriginalPrice: { type: Number, min: 0 },
     markupPercent: { type: Number, default: 0, min: 0, max: 1000 },
     platformSellingPrice: { type: Number, min: 0 },
     markupAmount: { type: Number, default: 0, min: 0 },

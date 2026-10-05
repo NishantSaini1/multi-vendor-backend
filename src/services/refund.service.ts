@@ -95,7 +95,29 @@ async function finalizeOrderPaymentStatus(orderId: mongoose.Types.ObjectId, paym
   const newStatus = totalRefunded >= payment.amount ? PAYMENT_STATUS.REFUNDED : PAYMENT_STATUS.PARTIALLY_REFUNDED;
   payment.status = newStatus;
   await payment.save();
-  await Order.updateOne({ _id: orderId }, { paymentStatus: newStatus });
+
+  // Record how much of the order has been refunded (0–1) so the profit reports
+  // reverse that share of the order's markup profit / commission revenue.
+  const refundRatio = payment.amount > 0 ? Math.min(1, totalRefunded / payment.amount) : 0;
+  const order = await Order.findById(orderId).select('pricingModel status markupAmount refundRatio');
+  const previousRatio = order?.refundRatio ?? 0;
+  await Order.updateOne({ _id: orderId }, { paymentStatus: newStatus, refundRatio });
+
+  // MARKUP: a delivered order's markup profit was credited to the platform; give
+  // back the share now refunded. (COMMISSION keeps its existing behaviour — the
+  // reports reverse its share, the ledger is unchanged.)
+  if (order && order.pricingModel === 'MARKUP' && order.status === 'DELIVERED' && (order.markupAmount ?? 0) > 0 && refundRatio > previousRatio) {
+    const amount = Math.round((order.markupAmount! * (refundRatio - previousRatio) + Number.EPSILON) * 100) / 100;
+    if (amount > 0) {
+      await ledgerService.recordTransaction({
+        orderId: orderId.toString(),
+        type: TRANSACTION_TYPE.PLATFORM_FEE,
+        amount,
+        direction: TRANSACTION_DIRECTION.DEBIT,
+        metadata: { reversal: 'MARKUP' },
+      });
+    }
+  }
 }
 
 function assertRefundAccess(user: JwtPayload, order: IOrder): void {

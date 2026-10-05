@@ -11,8 +11,9 @@ import { assertOwnerOrLocationAccess, locationScopeFilter } from '../middleware/
 import { APPROVAL_STATUS, GENERIC_STATUS } from '../constants/enums';
 import { assertCategoryAndSubcategory } from './instamartGlobalProduct.service';
 import {
-  applyProductMarkup,
-  derivePlatformFields,
+  applyProductPricing,
+  hasPricingRequest,
+  pricingRequestFromInput,
   loadPricingConfig,
   markupMartListing,
   markupMartListings,
@@ -103,6 +104,9 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
       variantNameFrom,
       // cheapest pack of all (base + ACTIVE variants)
       minPackPrice: stat ? Math.min(basePrice, stat.minVariantPrice) : basePrice,
+      // the cheapest variant on its own (raw) — lets the customer transform
+      // price the variants and the base pack separately under MARKUP
+      minVariantPrice: stat ? stat.minVariantPrice : null,
       // pack sizes to choose from: every ACTIVE variant + the base pack
       variantCount: stat ? stat.count + 1 : 1,
     };
@@ -240,13 +244,22 @@ export async function createInstamartProduct(
     productId?: string;
     newProduct?: Record<string, unknown>;
     sku?: string;
-    sellingPrice: number;
+    // COMMISSION: the Platform Selling Price (what customers pay). MARKUP: the
+    // Vendor Original Price — the selling price is then derived from the
+    // product's markup. See pricing.service's applyProductPricing.
+    sellingPrice?: number;
+    vendorOriginalPrice?: number;
+    platformSellingPrice?: number;
+    // Admin-only, MARKUP stores.
+    markupPercent?: number;
     discount?: number;
     sortOrder?: number;
   },
   user: JwtPayload,
 ) {
   const store = await resolveStore({ storeId: data.storeId }, user);
+  const config = toPricingConfig(store);
+  const request = pricingRequestFromInput(config, data as Record<string, unknown>, 'sellingPrice');
 
   const session = await mongoose.startSession();
   try {
@@ -255,6 +268,8 @@ export async function createInstamartProduct(
       let globalProductId: string;
       let categoryId: mongoose.Types.ObjectId;
       let subcategoryId: mongoose.Types.ObjectId | undefined;
+      // The printed MRP the selling price is checked against.
+      let mrp: number | undefined;
 
       if (data.productId) {
         // Option A: map onto an existing, already-approved catalog entry.
@@ -266,6 +281,7 @@ export async function createInstamartProduct(
         globalProductId = globalProduct.id;
         categoryId = globalProduct.categoryId;
         subcategoryId = globalProduct.subcategoryId;
+        mrp = globalProduct.mrp;
       } else {
         // Option B: propose a brand-new catalog entry — auto-approved
         // immediately (no admin review gate for a store's own new product);
@@ -284,7 +300,11 @@ export async function createInstamartProduct(
         globalProductId = created.id;
         categoryId = created.categoryId;
         subcategoryId = created.subcategoryId;
+        mrp = created.mrp;
       }
+
+      const pricing: Record<string, number | undefined> = {};
+      applyProductPricing(pricing, 'sellingPrice', config, user, request, mrp);
 
       const [created] = await InstamartProduct.create(
         [
@@ -295,9 +315,11 @@ export async function createInstamartProduct(
             categoryId,
             subcategoryId,
             sku: data.sku,
-            sellingPrice: data.sellingPrice,
-            // A MARKUP store's platform price and markup, derived from its own price.
-            ...derivePlatformFields(data.sellingPrice, toPricingConfig(store)),
+            sellingPrice: pricing.sellingPrice,
+            vendorOriginalPrice: pricing.vendorOriginalPrice,
+            markupPercent: pricing.markupPercent,
+            markupAmount: pricing.markupAmount,
+            platformSellingPrice: pricing.platformSellingPrice,
             discount: data.discount ?? 0,
             sortOrder: data.sortOrder ?? 0,
           },
@@ -358,16 +380,15 @@ export async function updateInstamartProduct(id: string, data: Record<string, un
   delete data.categoryId;
   delete data.subcategoryId;
 
-  // Markup: only an admin may set a product's markup % (under MARKUP); the
-  // platform price and markup amount are re-derived whenever the store's own
-  // price changes.
-  const requestedMarkup = data.markupPercent as number | undefined;
-  delete data.markupPercent;
+  // Pricing (selling price / vendor original price / markup) is applied by
+  // pricing.service so the fields stay consistent and the MRP rule is enforced.
+  const config = await loadPricingConfig('STORE', product.storeId.toString());
+  const request = pricingRequestFromInput(config, data, 'sellingPrice');
 
   Object.assign(product, data);
-  if (data.sellingPrice !== undefined || requestedMarkup !== undefined) {
-    const config = await loadPricingConfig('STORE', product.storeId.toString());
-    applyProductMarkup(product, product.sellingPrice, config, user, requestedMarkup);
+  if (hasPricingRequest(request)) {
+    const globalProduct = await InstamartGlobalProduct.findById(product.productId).select('mrp');
+    applyProductPricing(product, 'sellingPrice', config, user, request, globalProduct?.mrp);
   }
   await product.save();
   return product;

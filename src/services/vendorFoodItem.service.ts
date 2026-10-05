@@ -12,8 +12,9 @@ import { findFoodProductOrThrow } from './foodProduct.service';
 import { assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
 import {
   DEFAULT_PRICING_CONFIG,
-  applyProductMarkup,
-  derivePlatformFields,
+  applyProductPricing,
+  hasPricingRequest,
+  pricingRequestFromInput,
   markupFoodItem,
   markupFoodVariant,
   markupModifierOption,
@@ -69,7 +70,15 @@ export async function addVendorFoodItem(
   vendorId: string,
   data: {
     globalFoodItemId: string;
-    price: number;
+    // COMMISSION: the Platform Selling Price (what customers pay). MARKUP: the
+    // Vendor Original Price — the selling price is then derived from the
+    // product's markup. See pricing.service's applyProductPricing.
+    price?: number;
+    vendorOriginalPrice?: number;
+    platformSellingPrice?: number;
+    // Admin-only, MARKUP vendors.
+    markupPercent?: number;
+    // The printed MRP; the selling price may not exceed it.
     mrp?: number;
     costPrice?: number;
     preparationTime?: number;
@@ -85,14 +94,19 @@ export async function addVendorFoodItem(
   }
   await assertVendorHasCatalogAccess(vendorId, globalItem.categoryId.toString(), globalItem.subcategoryId?.toString());
 
+  const config = toPricingConfig(vendor);
+  const pricing: Record<string, number | undefined> = {};
+  applyProductPricing(pricing, 'price', config, user, pricingRequestFromInput(config, data as Record<string, unknown>, 'price'), data.mrp);
+
   try {
     const item = await VendorFoodItem.create({
       vendorId,
       globalFoodItemId: data.globalFoodItemId,
-      price: data.price,
-      // The vendor's price stays `price`; a MARKUP vendor's platform price and
-      // markup are derived from it (see pricing.service.ts).
-      ...derivePlatformFields(data.price, toPricingConfig(vendor)),
+      price: pricing.price,
+      vendorOriginalPrice: pricing.vendorOriginalPrice,
+      markupPercent: pricing.markupPercent,
+      markupAmount: pricing.markupAmount,
+      platformSellingPrice: pricing.platformSellingPrice,
       mrp: data.mrp,
       costPrice: data.costPrice,
       preparationTime: data.preparationTime,
@@ -132,15 +146,14 @@ export async function updateVendorFoodItem(vendorId: string, id: string, data: R
   delete data.vendorId;
   delete data.globalFoodItemId;
 
-  // Markup: only an admin may set a product's markup % (under MARKUP); the
-  // platform price and markup amount are re-derived whenever the vendor's own
-  // price changes.
-  const requestedMarkup = data.markupPercent as number | undefined;
-  delete data.markupPercent;
+  // Pricing (selling price / vendor original price / markup) is applied by
+  // pricing.service so the fields stay consistent and the MRP rule is enforced.
+  const config = toPricingConfig(vendor);
+  const request = pricingRequestFromInput(config, data, 'price');
 
   Object.assign(item, data);
-  if (data.price !== undefined || requestedMarkup !== undefined) {
-    applyProductMarkup(item, item.price, toPricingConfig(vendor), user, requestedMarkup);
+  if (hasPricingRequest(request) || data.mrp !== undefined) {
+    applyProductPricing(item, 'price', config, user, request, item.mrp);
   }
   await item.save();
   await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);

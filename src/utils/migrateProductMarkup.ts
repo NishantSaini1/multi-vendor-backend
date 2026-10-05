@@ -2,23 +2,33 @@ import { Vendor } from '../models/Vendor';
 import { Store } from '../models/Store';
 import { VendorFoodItem } from '../models/VendorFoodItem';
 import { InstamartProduct } from '../models/InstamartProduct';
+import { InstamartGlobalProduct } from '../models/InstamartGlobalProduct';
 import { PRICING_MODELS } from '../constants/enums';
 import { logger } from './logger';
 
-// Markup used to be one default % (or flat amount) per vendor/store, with an
-// optional hand-fixed platform price per product. It is now a markup % on each
-// PRODUCT (see pricing.service.ts). This converts existing data:
+// Brings existing products onto the current pricing model (see
+// pricing.service.ts): every product carries a Platform Selling Price (what the
+// customer pays, in its price field) next to its Vendor Original Price, and
+// MARKUP is a per-product markupPercent.
 //
-//   MARKUP sellers, per product:
-//     hand-fixed platform price  -> markupPercent = (platform - price) / price × 100
-//     else seller PERCENTAGE     -> markupPercent = the seller's old value
-//     else seller FIXED amount   -> markupPercent = amount / price × 100
-//   every product                -> platformSellingPrice / markupAmount re-derived
-//   COMMISSION sellers' products -> markupPercent 0, platform price = own price
+// Before, a MARKUP product stored the VENDOR's price in the price field and the
+// customer price was derived from a seller-level markup (or a hand-fixed
+// platform price); a COMMISSION product stored the single price customers pay.
 //
-// then drops the retired fields (seller markupType/markupValue, product
+//   MARKUP seller, a product without vendorOriginalPrice (the older shape):
+//     vendorOriginalPrice = the stored price
+//     markupPercent       = its own markupPercent, else the hand-fixed platform
+//                           price's %, else the seller's old default markup
+//                           (a flat amount becomes its % of the price)
+//     price               = vendorOriginalPrice + markup  (what customers pay)
+//   COMMISSION seller, a product without vendorOriginalPrice:
+//     vendorOriginalPrice = the stored price (informational), price unchanged
+//   every product: platformSellingPrice mirrors price; markupAmount is derived.
+//
+// Then drops the retired fields (seller markupType/markupValue, product
 // platformPriceManual). Orders already placed are untouched — their pricing is
-// snapshotted. Idempotent: running it again changes nothing.
+// snapshotted. Idempotent. Products whose selling price is above the printed MRP
+// are listed (not changed) so they can be fixed — saving them is now refused.
 //
 //   npm run migrate:product-markup            apply
 //   npm run migrate:product-markup -- --dry-run   report only
@@ -34,14 +44,19 @@ interface SellerDoc {
 
 interface ProductDoc {
   _id: unknown;
+  productId?: unknown;
   price?: number;
   sellingPrice?: number;
+  mrp?: number;
+  vendorOriginalPrice?: number;
   platformSellingPrice?: number;
   platformPriceManual?: boolean;
   markupPercent?: number;
 }
 
+// The markup % an older MARKUP product stands for, given its stored (vendor) price.
 function legacyPercent(seller: SellerDoc, product: ProductDoc, price: number): number {
+  if (product.markupPercent && product.markupPercent > 0) return product.markupPercent;
   if (product.platformPriceManual && typeof product.platformSellingPrice === 'number' && product.platformSellingPrice > price && price > 0) {
     return round2(((product.platformSellingPrice - price) / price) * 100);
   }
@@ -54,6 +69,7 @@ function legacyPercent(seller: SellerDoc, product: ProductDoc, price: number): n
 export async function migrateProductMarkup(dryRun = false) {
   let sellers = 0;
   let products = 0;
+  const aboveMrp: { seller: string; product: string; sellingPrice: number; mrp: number }[] = [];
 
   const targets = [
     { label: 'vendor', seller: Vendor, product: VendorFoodItem, sellerKey: 'vendorId', priceKey: 'price' },
@@ -69,17 +85,39 @@ export async function migrateProductMarkup(dryRun = false) {
       const productDocs = (await t.product.collection.find({ [t.sellerKey]: seller._id }).toArray()) as unknown as ProductDoc[];
 
       for (const product of productDocs) {
-        const price = (product as unknown as Record<string, unknown>)[t.priceKey] as number;
-        if (typeof price !== 'number') continue;
-        // Don't overwrite a percent that has already been set on the new model.
-        const percent = isMarkup ? (product.markupPercent && product.markupPercent > 0 ? product.markupPercent : legacyPercent(seller, product, price)) : 0;
-        const platformSellingPrice = percent > 0 ? round2(price * (1 + percent / 100)) : price;
-        const markupAmount = round2(platformSellingPrice - price);
+        const stored = (product as unknown as Record<string, unknown>)[t.priceKey] as number;
+        if (typeof stored !== 'number') continue;
+        const legacy = product.vendorOriginalPrice === undefined;
+
+        let sellingPrice = stored;
+        let vendorOriginalPrice = product.vendorOriginalPrice ?? stored;
+        let markupPercent = isMarkup ? product.markupPercent ?? 0 : product.markupPercent ?? 0;
+        if (isMarkup) {
+          if (legacy) {
+            markupPercent = legacyPercent(seller, product, stored);
+            vendorOriginalPrice = stored;
+          }
+          sellingPrice = markupPercent > 0 ? round2(vendorOriginalPrice * (1 + markupPercent / 100)) : vendorOriginalPrice;
+        }
+        const markupAmount = isMarkup ? round2(sellingPrice - vendorOriginalPrice) : 0;
+
+        // The printed MRP: on the product itself (Food) or its shared catalog entry (Instamart).
+        let mrp = product.mrp;
+        if (mrp === undefined && product.productId) {
+          mrp = ((await InstamartGlobalProduct.collection.findOne({ _id: product.productId as never })) as { mrp?: number } | null)?.mrp;
+        }
+        if (typeof mrp === 'number' && mrp > 0 && sellingPrice > mrp + 0.005) {
+          aboveMrp.push({ seller: String(seller._id), product: String(product._id), sellingPrice, mrp });
+        }
+
         products += 1;
         if (dryRun) continue;
         await t.product.collection.updateOne(
           { _id: product._id as never },
-          { $set: { markupPercent: percent, platformSellingPrice, markupAmount }, $unset: { platformPriceManual: '' } },
+          {
+            $set: { [t.priceKey]: sellingPrice, platformSellingPrice: sellingPrice, vendorOriginalPrice, markupPercent, markupAmount },
+            $unset: { platformPriceManual: '' },
+          },
         );
       }
 
@@ -91,7 +129,12 @@ export async function migrateProductMarkup(dryRun = false) {
   }
 
   logger.info(`${dryRun ? '[dry run] would migrate' : 'Migrated'} ${products} products across ${sellers} sellers`);
-  return { sellers, products };
+  if (aboveMrp.length > 0) {
+    logger.warn(
+      `${aboveMrp.length} product(s) have a selling price above their MRP — fix these (lower the price or the markup): ${JSON.stringify(aboveMrp.slice(0, 50))}`,
+    );
+  }
+  return { sellers, products, aboveMrp };
 }
 
 if (require.main === module) {

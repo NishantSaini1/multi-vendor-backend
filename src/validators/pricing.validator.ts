@@ -44,6 +44,7 @@ export const profitReportQuerySchema = z.object({
     sellerId: objectId.optional(),
     productId: objectId.optional(),
     categoryId: objectId.optional(),
+    subcategoryId: objectId.optional(),
     businessType: z.enum([BUSINESS_TYPES.FOOD, BUSINESS_TYPES.INSTAMART]).optional(),
     pricingModel: pricingModel.optional(),
     // An order status, or ALL; DELIVERED when omitted.
