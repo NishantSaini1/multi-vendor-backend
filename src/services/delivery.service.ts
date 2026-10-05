@@ -67,6 +67,10 @@ async function assertDeliveryAccess(user: JwtPayload, delivery: IDelivery): Prom
     if (order.vendorId?.toString() !== user.userId) throw ApiError.forbidden('You do not have access to this delivery', 'DELIVERY_FORBIDDEN');
     return;
   }
+  if (user.userType === 'STORE') {
+    if (order.storeId?.toString() !== user.userId) throw ApiError.forbidden('You do not have access to this delivery', 'DELIVERY_FORBIDDEN');
+    return;
+  }
   assertLocationAccess(user, order.locationId.toString());
 }
 
@@ -775,10 +779,10 @@ async function _generateAndSendCustomerOtp(delivery: InstanceType<typeof Deliver
 
 // Generate (or regenerate) the vendor pickup OTP. Returns the plaintext OTP
 // for the vendor to display — only the hash is persisted on the Delivery doc.
-// Callable by VENDOR (owning this order) or ADMIN.
+// Callable by the VENDOR (Food) or STORE (Instamart) owning this order, or ADMIN.
 export async function generateVendorOtp(deliveryId: string, user: JwtPayload): Promise<{ otp: string }> {
-  if (user.userType !== 'VENDOR' && user.userType !== 'ADMIN') {
-    throw ApiError.forbidden('Only a vendor or admin can generate the pickup OTP', 'FORBIDDEN');
+  if (user.userType !== 'VENDOR' && user.userType !== 'STORE' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only the vendor/store or an admin can generate the pickup OTP', 'FORBIDDEN');
   }
 
   const delivery = await Delivery.findById(deliveryId).select('+vendorOtpCode +vendorOtpHash');
@@ -802,10 +806,10 @@ export async function generateVendorOtp(deliveryId: string, user: JwtPayload): P
 }
 
 // Returns the current vendor pickup OTP for display in the vendor app.
-// Only accessible to the owning vendor or admin.
+// Only accessible to the owning vendor/store or admin.
 export async function getVendorOtp(deliveryId: string, user: JwtPayload): Promise<{ otp: string | null; verified: boolean }> {
-  if (user.userType !== 'VENDOR' && user.userType !== 'ADMIN') {
-    throw ApiError.forbidden('Only a vendor or admin can view the pickup OTP', 'FORBIDDEN');
+  if (user.userType !== 'VENDOR' && user.userType !== 'STORE' && user.userType !== 'ADMIN') {
+    throw ApiError.forbidden('Only the vendor/store or an admin can view the pickup OTP', 'FORBIDDEN');
   }
   const delivery = await Delivery.findById(deliveryId).select('+vendorOtpCode +vendorOtpHash');
   if (!delivery) throw ApiError.notFound('Delivery not found', 'DELIVERY_NOT_FOUND');

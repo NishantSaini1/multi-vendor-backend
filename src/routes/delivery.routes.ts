@@ -15,9 +15,11 @@ import {
 
 const router = Router();
 
-const anyDeliveryActor = authenticate('ADMIN', 'DELIVERY_PARTNER', 'CUSTOMER', 'VENDOR');
+const anyDeliveryActor = authenticate('ADMIN', 'DELIVERY_PARTNER', 'CUSTOMER', 'VENDOR', 'STORE');
 const operatorActor = authenticate('ADMIN', 'DELIVERY_PARTNER');
-const vendorOrAdmin = authenticate('ADMIN', 'VENDOR');
+// The pickup point is a restaurant (VENDOR, Food orders) or a store (STORE,
+// Instamart orders) — both hand the rider the pickup OTP the same way.
+const vendorOrAdmin = authenticate('ADMIN', 'VENDOR', 'STORE');
 const customerOrAdmin = authenticate('ADMIN', 'CUSTOMER');
 
 router.get('/', operatorActor, requirePermission(PERMISSIONS.DELIVERY_VIEW), validate(listDeliveriesQuerySchema), controller.list);
@@ -35,7 +37,7 @@ router.patch(
   controller.updateStatus,
 );
 
-// Vendor fetches the current pickup OTP to display in their app (order details screen).
+// Vendor/store fetches the current pickup OTP to display in their app (order details screen).
 router.get(
   '/:id/vendor-otp',
   vendorOrAdmin,
@@ -44,7 +46,7 @@ router.get(
   controller.getVendorOtp,
 );
 
-// Vendor generates (or regenerates) the pickup OTP (e.g. first time or if partner needs a refresh).
+// Vendor/store generates (or regenerates) the pickup OTP (e.g. first time or if partner needs a refresh).
 router.post(
   '/:id/vendor-otp',
   vendorOrAdmin,
