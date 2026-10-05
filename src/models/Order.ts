@@ -48,6 +48,8 @@ export interface IOrder extends Document {
   //   vendorSettlementAmount — what the vendor/store is owed for the items
   //   platformProfit — commissionAmount (COMMISSION) or markupAmount (MARKUP)
   pricingModel?: string;
+  // Legacy: markup used to be configured per seller; it is now per product (see
+  // OrderItem.markupPercent). Only present on orders placed under the old model.
   markupType?: string;
   markupValue?: number;
   customerPrice?: number;

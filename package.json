@@ -16,6 +16,7 @@
     "seed:coupons": "tsx src/utils/seedCoupons.ts",
     "fix:review-indexes": "tsx src/utils/fixReviewIndexes.ts",
     "drop:store-zone-index": "tsx src/utils/dropStoreZoneIndex.ts",
+    "migrate:product-markup": "tsx src/utils/migrateProductMarkup.ts",
     "seed:support": "tsx src/utils/seedSupport.ts"
   },
   "engines": {

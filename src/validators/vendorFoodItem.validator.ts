@@ -27,9 +27,9 @@ export const updateVendorFoodItemSchema = z.object({
   params: z.object({ vendorId: objectId, id: objectId }),
   body: z.object({
     price: z.number().nonnegative().optional(),
-    // Admin-only: fix the platform selling price by hand (MARKUP vendors).
-    // null releases it back to the vendor's default markup.
-    platformSellingPrice: z.number().nonnegative().nullable().optional(),
+    // Admin-only: this item's markup % (MARKUP vendors); the platform selling
+    // price and markup amount are derived from it.
+    markupPercent: z.number().min(0).max(1000).optional(),
     mrp: z.number().nonnegative().optional(),
     costPrice: z.number().nonnegative().optional(),
     preparationTime: z.number().int().positive().optional(),

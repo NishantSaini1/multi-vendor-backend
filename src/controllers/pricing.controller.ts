@@ -3,7 +3,6 @@ import { catchAsync } from '../utils/catchAsync';
 import { sendSuccess } from '../utils/ApiResponse';
 import { ApiError } from '../utils/ApiError';
 import { locationScopeFilter } from '../middleware/rbac.middleware';
-import { DISCOUNT_TYPES } from '../constants/enums';
 import * as pricingService from '../services/pricing.service';
 import * as orderFinancials from '../services/orderFinancials.service';
 import * as financialReport from '../services/financialReport.service';
@@ -41,10 +40,8 @@ export const preview = catchAsync(async (req: Request, res: Response) => {
     config: pricingService.toPricingConfig({
       pricingModel: q.pricingModel,
       commissionPercent: q.commissionPercent !== undefined ? Number(q.commissionPercent) : undefined,
-      markupType: q.markupType ?? DISCOUNT_TYPES.PERCENTAGE,
-      markupValue: q.markupValue ? Number(q.markupValue) : 0,
     }),
-    platformPrice: q.platformPrice ? Number(q.platformPrice) : undefined,
+    markupPercent: q.markupPercent !== undefined ? Number(q.markupPercent) : undefined,
     deliveryFee: q.deliveryFee ? Number(q.deliveryFee) : undefined,
     paymentMethod: q.paymentMethod,
   });
@@ -71,8 +68,53 @@ export const financialReportHandler = catchAsync(async (req: Request, res: Respo
   sendSuccess(res, await financialReport.getFinancialReport(filter, range));
 });
 
-// Vendor-level (Food) / store-level (Instamart) settlement breakdown.
+// Seller → product → order profit reports. Markup is set per product but
+// reported per seller; MARKUP PROFIT and COMMISSION REVENUE stay separate.
+function profitFilters(req: Request): financialReport.ProfitFilters {
+  const user = requireUser(req);
+  const q = req.query as Record<string, string | undefined>;
+  const scope: Record<string, unknown> = { ...locationScopeFilter(user) };
+  if (q.locationId) scope.locationId = q.locationId;
+  const range: { from?: Date; to?: Date } = {};
+  if (q.from) range.from = new Date(q.from);
+  if (q.to) range.to = new Date(q.to);
+  return {
+    scope,
+    businessType: q.businessType,
+    sellerId: q.sellerId,
+    productId: q.productId,
+    categoryId: q.categoryId,
+    pricingModel: q.pricingModel,
+    status: q.status,
+    range,
+  };
+}
+
+// A vendor's/store's own earnings — always scoped to the logged-in seller, and
+// without the platform's profit.
+export const myEarningsSummary = catchAsync(async (req: Request, res: Response) => {
+  sendSuccess(res, await financialReport.getOwnEarningsSummary(requireUser(req).userId, req.query as Record<string, string>));
+});
+export const myProductEarnings = catchAsync(async (req: Request, res: Response) => {
+  sendSuccess(res, await financialReport.getOwnProductEarnings(requireUser(req).userId, req.query as Record<string, string>));
+});
+export const myOrderEarnings = catchAsync(async (req: Request, res: Response) => {
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  sendSuccess(res, await financialReport.getOwnOrderEarnings(requireUser(req).userId, req.query as Record<string, string>, limit));
+});
+
+// Vendor-level (Food) / store-level (Instamart) profit.
 export const sellerFinancialsHandler = catchAsync(async (req: Request, res: Response) => {
-  const { filter, range } = reportScope(req);
-  sendSuccess(res, await financialReport.getSellerFinancials(filter, range));
+  sendSuccess(res, await financialReport.getSellerFinancials(profitFilters(req)));
+});
+
+// Product-level profit (within a seller when sellerId is given).
+export const productFinancialsHandler = catchAsync(async (req: Request, res: Response) => {
+  sendSuccess(res, await financialReport.getSellerProducts(profitFilters(req)));
+});
+
+// Order-level profit (for a seller and/or product).
+export const orderFinancialsHandler = catchAsync(async (req: Request, res: Response) => {
+  const limit = req.query.limit ? Number(req.query.limit) : undefined;
+  sendSuccess(res, await financialReport.getSellerOrders(profitFilters(req), limit));
 });

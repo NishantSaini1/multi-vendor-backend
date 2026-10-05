@@ -9,6 +9,8 @@ import {
   updatePricingSchema,
   pricingPreviewQuerySchema,
   financialReportQuerySchema,
+  profitReportQuerySchema,
+  sellerEarningsQuerySchema,
 } from '../validators/pricing.validator';
 
 const router = Router();
@@ -31,6 +33,12 @@ router.patch('/stores/:id', storeOrAdmin, requirePermission(PERMISSIONS.STORE_UP
 
 router.get('/preview', authenticate('ADMIN', 'VENDOR', 'STORE'), validate(pricingPreviewQuerySchema), controller.preview);
 
+// A vendor's/store's own earnings by product and order (never the platform's profit).
+const sellerOnly = authenticate('VENDOR', 'STORE');
+router.get('/my/summary', sellerOnly, validate(sellerEarningsQuerySchema), controller.myEarningsSummary);
+router.get('/my/products', sellerOnly, validate(sellerEarningsQuerySchema), controller.myProductEarnings);
+router.get('/my/orders', sellerOnly, validate(sellerEarningsQuerySchema), controller.myOrderEarnings);
+
 // Platform financial reports — Food and Instamart separately, and per seller.
 router.get(
   '/reports/financial',
@@ -39,12 +47,8 @@ router.get(
   validate(financialReportQuerySchema),
   controller.financialReportHandler,
 );
-router.get(
-  '/reports/sellers',
-  authenticateAdmin,
-  requirePermission(PERMISSIONS.COMMISSION_VIEW),
-  validate(financialReportQuerySchema),
-  controller.sellerFinancialsHandler,
-);
+router.get('/reports/sellers', authenticateAdmin, requirePermission(PERMISSIONS.COMMISSION_VIEW), validate(profitReportQuerySchema), controller.sellerFinancialsHandler);
+router.get('/reports/products', authenticateAdmin, requirePermission(PERMISSIONS.COMMISSION_VIEW), validate(profitReportQuerySchema), controller.productFinancialsHandler);
+router.get('/reports/orders', authenticateAdmin, requirePermission(PERMISSIONS.COMMISSION_VIEW), validate(profitReportQuerySchema), controller.orderFinancialsHandler);
 
 export default router;

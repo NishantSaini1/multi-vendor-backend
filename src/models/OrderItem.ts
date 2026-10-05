@@ -37,6 +37,18 @@ export interface IOrderItem extends Document {
   commissionAmount?: number;
   markupAmount?: number;
   vendorSettlementAmount?: number;
+  // Pricing snapshot at order time — never recomputed from the product's
+  // current markup, so a later change can't rewrite history. vendorPrice is
+  // the vendor's original unit price; platformSellingPrice what the customer
+  // paid per unit; unitMarkupAmount the markup in each unit. The three totals
+  // are line totals (all quantities, net of item discounts):
+  // totalSellingAmount - totalVendorAmount = totalAdminProfit under MARKUP.
+  markupPercent?: number;
+  unitMarkupAmount?: number;
+  platformSellingPrice?: number;
+  totalVendorAmount?: number;
+  totalSellingAmount?: number;
+  totalAdminProfit?: number;
   quantity: number;
   modifiers: IOrderItemModifier[];
   itemTotal: number;
@@ -66,6 +78,12 @@ const orderItemSchema = new Schema<IOrderItem>(
     commissionAmount: { type: Number, min: 0 },
     markupAmount: { type: Number, min: 0 },
     vendorSettlementAmount: { type: Number },
+    markupPercent: { type: Number, min: 0 },
+    unitMarkupAmount: { type: Number, min: 0 },
+    platformSellingPrice: { type: Number, min: 0 },
+    totalVendorAmount: { type: Number, min: 0 },
+    totalSellingAmount: { type: Number, min: 0 },
+    totalAdminProfit: { type: Number },
     quantity: { type: Number, required: true, min: 1 },
     modifiers: { type: [orderItemModifierSchema], default: [] },
     itemTotal: { type: Number, required: true, min: 0 },

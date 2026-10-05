@@ -114,7 +114,7 @@ export async function search(query: string, filter: SearchFilter) {
       status: GENERIC_STATUS.ACTIVE,
     })
       .limit(RESULT_LIMIT)
-      .populate('vendorId', 'restaurantName logo rating ratingCount pricingModel markupType markupValue');
+      .populate('vendorId', 'restaurantName logo rating ratingCount pricingModel commissionPercent');
 
     foodProducts = listings
       .filter((listing) => listing.vendorId)
@@ -156,7 +156,7 @@ export async function search(query: string, filter: SearchFilter) {
       ...scope,
     })
       .limit(RESULT_LIMIT)
-      .populate('storeId', 'name logo rating ratingCount pricingModel markupType markupValue');
+      .populate('storeId', 'name logo rating ratingCount pricingModel commissionPercent');
 
     instamartProducts = mappings
       .filter((mapping) => mapping.storeId)

@@ -11,7 +11,7 @@ import { assertOwnerOrLocationAccess, locationScopeFilter } from '../middleware/
 import { APPROVAL_STATUS, GENERIC_STATUS } from '../constants/enums';
 import { assertCategoryAndSubcategory } from './instamartGlobalProduct.service';
 import {
-  applyProductPlatformPrice,
+  applyProductMarkup,
   derivePlatformFields,
   loadPricingConfig,
   markupMartListing,
@@ -358,15 +358,16 @@ export async function updateInstamartProduct(id: string, data: Record<string, un
   delete data.categoryId;
   delete data.subcategoryId;
 
-  // Platform price: only an admin may fix it by hand; it is re-derived whenever
-  // the store's own price changes.
-  const requestedPlatformPrice = data.platformSellingPrice as number | null | undefined;
-  delete data.platformSellingPrice;
+  // Markup: only an admin may set a product's markup % (under MARKUP); the
+  // platform price and markup amount are re-derived whenever the store's own
+  // price changes.
+  const requestedMarkup = data.markupPercent as number | undefined;
+  delete data.markupPercent;
 
   Object.assign(product, data);
-  if (data.sellingPrice !== undefined || requestedPlatformPrice !== undefined) {
+  if (data.sellingPrice !== undefined || requestedMarkup !== undefined) {
     const config = await loadPricingConfig('STORE', product.storeId.toString());
-    applyProductPlatformPrice(product, product.sellingPrice, config, user, requestedPlatformPrice);
+    applyProductMarkup(product, product.sellingPrice, config, user, requestedMarkup);
   }
   await product.save();
   return product;
@@ -404,7 +405,8 @@ export async function listInstamartVariants(productId: string, user: JwtPayload)
   const variants = await InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
   if (user.userType !== 'CUSTOMER') return variants;
   const pricing = await loadPricingConfig('STORE', product.storeId.toString());
-  return variants.map((variant) => markupMartVariant(variant.toJSON() as Record<string, unknown>, pricing));
+  // A variant carries its product's markup %.
+  return variants.map((variant) => markupMartVariant(variant.toJSON() as Record<string, unknown>, pricing, product));
 }
 
 export async function createInstamartVariant(productId: string, data: Record<string, unknown>, user: JwtPayload) {

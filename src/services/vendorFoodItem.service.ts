@@ -12,7 +12,7 @@ import { findFoodProductOrThrow } from './foodProduct.service';
 import { assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
 import {
   DEFAULT_PRICING_CONFIG,
-  applyProductPlatformPrice,
+  applyProductMarkup,
   derivePlatformFields,
   markupFoodItem,
   markupFoodVariant,
@@ -132,14 +132,15 @@ export async function updateVendorFoodItem(vendorId: string, id: string, data: R
   delete data.vendorId;
   delete data.globalFoodItemId;
 
-  // Platform price: only an admin may fix it by hand; it is re-derived whenever
-  // the vendor's own price changes.
-  const requestedPlatformPrice = data.platformSellingPrice as number | null | undefined;
-  delete data.platformSellingPrice;
+  // Markup: only an admin may set a product's markup % (under MARKUP); the
+  // platform price and markup amount are re-derived whenever the vendor's own
+  // price changes.
+  const requestedMarkup = data.markupPercent as number | undefined;
+  delete data.markupPercent;
 
   Object.assign(item, data);
-  if (data.price !== undefined || requestedPlatformPrice !== undefined) {
-    applyProductPlatformPrice(item, item.price, toPricingConfig(vendor), user, requestedPlatformPrice);
+  if (data.price !== undefined || requestedMarkup !== undefined) {
+    applyProductMarkup(item, item.price, toPricingConfig(vendor), user, requestedMarkup);
   }
   await item.save();
   await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
@@ -170,11 +171,12 @@ export async function updateVendorFoodItemAvailability(
 
 export async function listFoodVariants(vendorId: string, itemId: string, user: JwtPayload) {
   const vendor = await assertVendorAccess(vendorId, user);
-  await findVendorFoodItemOrThrow(vendorId, itemId);
+  const item = await findVendorFoodItemOrThrow(vendorId, itemId);
   const variants = await FoodVariant.find({ vendorFoodItemId: itemId }).sort({ isDefault: -1, name: 1 });
   const pricing = pricingFor(user, vendor);
   if (pricing === DEFAULT_PRICING_CONFIG) return variants;
-  return variants.map((variant) => markupFoodVariant(variant.toJSON() as Record<string, unknown>, pricing));
+  // A variant carries its item's markup %.
+  return variants.map((variant) => markupFoodVariant(variant.toJSON() as Record<string, unknown>, pricing, item));
 }
 
 export async function createFoodVariant(vendorId: string, itemId: string, data: Record<string, unknown>, user: JwtPayload) {
@@ -256,12 +258,13 @@ export async function deleteModifierGroup(vendorId: string, itemId: string, grou
 
 export async function listModifierOptions(vendorId: string, itemId: string, groupId: string, user: JwtPayload) {
   const vendor = await assertVendorAccess(vendorId, user);
-  await findVendorFoodItemOrThrow(vendorId, itemId);
+  const item = await findVendorFoodItemOrThrow(vendorId, itemId);
   await findModifierGroupOrThrow(itemId, groupId);
   const options = await ModifierOption.find({ modifierGroupId: groupId }).sort({ createdAt: 1 });
   const pricing = pricingFor(user, vendor);
   if (pricing === DEFAULT_PRICING_CONFIG) return options;
-  return options.map((option) => markupModifierOption(option.toJSON() as Record<string, unknown>, pricing));
+  // An add-on carries its item's markup %.
+  return options.map((option) => markupModifierOption(option.toJSON() as Record<string, unknown>, pricing, item));
 }
 
 export async function createModifierOption(

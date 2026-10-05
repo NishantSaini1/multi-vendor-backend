@@ -2,7 +2,7 @@ import { env } from '../config/env';
 import { DISCOUNT_TYPES, PRICING_MODELS } from '../constants/enums';
 import { PAYMENT_METHODS } from '../constants/paymentStatus';
 import * as commissionService from './commission.service';
-import { PricingConfig, customerUnitPrice, isMarkupModel, platformPriceFor, round2 } from './pricing.service';
+import { PricingConfig, customerUnitPrice, effectiveMarkupPercent, isMarkupModel, round2 } from './pricing.service';
 
 // The one pricing & settlement engine, shared by Food and Instamart orders.
 // For an order (always a single seller) it works line by line:
@@ -57,8 +57,6 @@ export interface OrderFinancialsInput {
 export interface OrderFinancials {
   order: {
     pricingModel: string;
-    markupType?: string;
-    markupValue?: number;
     commissionType?: string;
     commissionRate?: number;
     commissionBaseAmount?: number;
@@ -148,7 +146,6 @@ export function buildOrderFinancials(input: OrderFinancialsInput): OrderFinancia
     lines,
     order: {
       pricingModel: markup ? PRICING_MODELS.MARKUP : PRICING_MODELS.COMMISSION,
-      ...(markup ? { markupType: config.markupType, markupValue: config.markupValue } : {}),
       ...(commission
         ? {
             commissionType: commission.type,
@@ -177,19 +174,17 @@ export function buildOrderFinancials(input: OrderFinancialsInput): OrderFinancia
 
 // Worked example for the admin/vendor "what would this look like" preview: one
 // line of `quantity` units at `vendorPrice`. Under MARKUP the platform price is
-// `platformPrice` when given, else the seller's default markup applied.
+// the vendor price plus `markupPercent` (the product's own markup).
 export function previewFinancials(params: {
   vendorPrice: number;
   quantity: number;
   config: PricingConfig;
-  platformPrice?: number;
+  markupPercent?: number;
   deliveryFee?: number;
   paymentMethod?: string;
 }) {
   const { vendorPrice, quantity, config } = params;
-  const unitPrice = isMarkupModel(config)
-    ? platformPriceFor(vendorPrice, config, params.platformPrice !== undefined ? { platformSellingPrice: params.platformPrice, platformPriceManual: true } : undefined)
-    : vendorPrice;
+  const unitPrice = customerUnitPrice(vendorPrice, config, { markupPercent: params.markupPercent });
   const customerAmount = round2(unitPrice * quantity);
   const deliveryFee = params.deliveryFee ?? 0;
   const paymentMethod = params.paymentMethod ?? PAYMENT_METHODS.COD;
@@ -210,6 +205,7 @@ export function previewFinancials(params: {
   });
   return {
     vendorOriginalPrice: vendorPrice,
+    markupPercent: effectiveMarkupPercent(config, { markupPercent: params.markupPercent }),
     platformSellingPrice: unitPrice,
     markupPerUnit: round2(unitPrice - vendorPrice),
     quantity,

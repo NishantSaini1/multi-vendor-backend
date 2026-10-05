@@ -5,7 +5,7 @@ import { ModifierGroup } from '../models/ModifierGroup';
 import { ModifierOption } from '../models/ModifierOption';
 import { IOrderItemModifier } from '../models/OrderItem';
 import { ApiError } from '../utils/ApiError';
-import { customerModifierPrice, customerUnitPrice, loadPricingConfig, platformPriceFor, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
+import { customerModifierPrice, customerUnitPrice, effectiveMarkupPercent, loadPricingConfig, PricingConfig, DEFAULT_PRICING_CONFIG } from './pricing.service';
 import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 // Single source of truth for "resolve + validate + price one Food line item"
@@ -27,6 +27,8 @@ export interface ResolvedFoodLineItem {
   name: string;
   unitPrice: number;
   vendorUnitPrice: number;
+  // The item's own markup % in effect (0 unless the vendor is on MARKUP).
+  markupPercent: number;
   modifiers: IOrderItemModifier[];
   modifiersUnitTotal: number;
   vendorModifiersUnitTotal: number;
@@ -57,6 +59,8 @@ export async function resolveModifierSelections(
   vendorFoodItemId: string,
   selections: { modifierOptionId: string; quantity: number }[],
   pricing: PricingConfig = DEFAULT_PRICING_CONFIG,
+  // The item the options belong to — their price carries its markup %.
+  item?: { markupPercent?: number | null },
 ): Promise<{ snapshots: IOrderItemModifier[]; unitTotal: number; vendorUnitTotal: number }> {
   const allGroups = await ModifierGroup.find({ vendorFoodItemId, status: GENERIC_STATUS.ACTIVE });
   const groupById = new Map(allGroups.map((g) => [g.id, g]));
@@ -79,7 +83,7 @@ export async function resolveModifierSelections(
       }
 
       selectedCountByGroup.set(group.id, (selectedCountByGroup.get(group.id) ?? 0) + selection.quantity);
-      const customerOptionPrice = customerModifierPrice(option.price, pricing);
+      const customerOptionPrice = customerModifierPrice(option.price, pricing, item);
       unitTotal += customerOptionPrice * selection.quantity;
       vendorUnitTotal += option.price * selection.quantity;
       snapshots.push({
@@ -156,15 +160,14 @@ export async function resolveFoodLineItem(
   }
 
   const pricing = await loadPricingConfig('VENDOR', vendorFoodItem.vendorId.toString());
-  // The item's own (base) price uses its platform price (admin-fixed or the
-  // vendor's default markup); a named variant always uses the default markup.
-  const unitPrice = variant ? customerUnitPrice(vendorUnitPrice, pricing) : platformPriceFor(vendorUnitPrice, pricing, vendorFoodItem);
+  // The item's own price, and any variant of it, carry the item's markup %.
+  const unitPrice = customerUnitPrice(vendorUnitPrice, pricing, vendorFoodItem);
 
   const {
     snapshots: modifiers,
     unitTotal: modifiersUnitTotal,
     vendorUnitTotal: vendorModifiersUnitTotal,
-  } = await resolveModifierSelections(vendorFoodItem.id, input.modifiers, pricing);
+  } = await resolveModifierSelections(vendorFoodItem.id, input.modifiers, pricing, vendorFoodItem);
 
   return {
     vendorFoodItem,
@@ -173,6 +176,7 @@ export async function resolveFoodLineItem(
     name: globalItem.name,
     unitPrice,
     vendorUnitPrice,
+    markupPercent: effectiveMarkupPercent(pricing, vendorFoodItem),
     modifiers,
     modifiersUnitTotal,
     vendorModifiersUnitTotal,

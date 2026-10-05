@@ -29,8 +29,8 @@ export async function listFavorites(customerId: string) {
   const [vendors, stores, foodItems, martItems] = await Promise.all([
     Vendor.find({ _id: { $in: ids(FAVORITE_TYPES.VENDOR) } }).select('restaurantName logo coverImage rating ratingCount isOpen status').lean(),
     Store.find({ _id: { $in: ids(FAVORITE_TYPES.STORE) } }).select('name logo rating status openingTime closingTime').lean(),
-    VendorFoodItem.find({ _id: { $in: ids(FAVORITE_TYPES.PRODUCT, 'FOOD') } }).select('price mrp availabilityStatus status vendorId').lean(),
-    InstamartProduct.find({ _id: { $in: ids(FAVORITE_TYPES.PRODUCT, 'INSTAMART') } }).select('sellingPrice mrp status storeId').lean(),
+    VendorFoodItem.find({ _id: { $in: ids(FAVORITE_TYPES.PRODUCT, 'FOOD') } }).select('price mrp markupPercent availabilityStatus status vendorId').lean(),
+    InstamartProduct.find({ _id: { $in: ids(FAVORITE_TYPES.PRODUCT, 'INSTAMART') } }).select('sellingPrice markupPercent mrp status storeId').lean(),
   ]);
   // Favorites show the live price a customer would pay, so apply each
   // seller's pricing model (MARKUP adds the platform markup).
@@ -56,13 +56,13 @@ export async function listFavorites(customerId: string) {
     } else if ((f.meta?.businessType ?? 'FOOD') === 'FOOD') {
       const p = fMap.get(id) as Record<string, unknown> | undefined;
       if (p) {
-        const shown = markupFoodItem({ price: p.price as number, mrp: p.mrp as number | undefined }, vendorPricing.get(String(p.vendorId)) ?? DEFAULT_PRICING_CONFIG);
+        const shown = markupFoodItem({ price: p.price as number, mrp: p.mrp as number | undefined, markupPercent: p.markupPercent as number | undefined }, vendorPricing.get(String(p.vendorId)) ?? DEFAULT_PRICING_CONFIG);
         live = { exists: true, price: shown.price, mrp: shown.mrp, available: p.availabilityStatus === 'AVAILABLE' && p.status === 'ACTIVE', vendorId: String(p.vendorId) };
       }
     } else {
       const p = mMap.get(id) as Record<string, unknown> | undefined;
       if (p) {
-        const shown = markupMartListing({ sellingPrice: p.sellingPrice as number }, storePricing.get(String(p.storeId)) ?? DEFAULT_PRICING_CONFIG);
+        const shown = markupMartListing({ sellingPrice: p.sellingPrice as number, markupPercent: p.markupPercent as number | undefined }, storePricing.get(String(p.storeId)) ?? DEFAULT_PRICING_CONFIG);
         live = { exists: true, price: shown.sellingPrice, mrp: p.mrp, available: p.status === 'ACTIVE', storeId: String(p.storeId) };
       }
     }

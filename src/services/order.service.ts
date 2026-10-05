@@ -23,7 +23,7 @@ import { generateOrderNumber } from '../utils/orderNumber';
 import { checkServiceability } from './serviceability.service';
 import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
-import { customerUnitPrice, loadPricingConfig, platformPriceFor } from './pricing.service';
+import { customerUnitPrice, effectiveMarkupPercent, loadPricingConfig } from './pricing.service';
 import { assertDeliveryCapacity } from './deliveryCapacity.service';
 import { buildOrderFinancials, resolveSellerCommission } from './orderFinancials.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
@@ -76,6 +76,9 @@ interface PreparedOrderItem {
   vendorPrice: number;
   vendorLineSubtotal: number;
   vendorLineDiscount: number;
+  // The product's own markup % in effect (0 unless the seller is on MARKUP) —
+  // snapshotted onto the order item.
+  markupPercent: number;
   quantity: number;
   modifiers: IOrderItemModifier[];
   itemTotal: number;
@@ -148,6 +151,7 @@ async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[])
       name: resolved.name,
       price: resolved.unitPrice,
       vendorPrice: resolved.vendorUnitPrice,
+      markupPercent: resolved.markupPercent,
       vendorLineSubtotal: vendorLine.lineSubtotal,
       vendorLineDiscount: vendorLine.lineDiscount,
       quantity: input.quantity,
@@ -208,9 +212,8 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       }
       vendorUnitPrice = variant.sellingPrice;
     }
-    // The product's own (base) pack uses its platform price (admin-fixed or
-    // the store's default markup); a named variant always uses the default markup.
-    const unitPrice = input.variantId ? customerUnitPrice(vendorUnitPrice, pricing) : platformPriceFor(vendorUnitPrice, pricing, product);
+    // The product's own pack, and any variant of it, carry the product's markup %.
+    const unitPrice = customerUnitPrice(vendorUnitPrice, pricing, product);
 
     // Authoritative stock check happens again inside the transaction below;
     // this pre-check just fails fast for the common case.
@@ -233,6 +236,7 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       name: globalProduct.name,
       price: unitPrice,
       vendorPrice: vendorUnitPrice,
+      markupPercent: effectiveMarkupPercent(pricing, product),
       vendorLineSubtotal: vendorLine.lineSubtotal,
       vendorLineDiscount: vendorLine.lineDiscount,
       quantity: input.quantity,
@@ -545,6 +549,14 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           commissionAmount: financials.lines[index].commissionAmount,
           markupAmount: financials.lines[index].markupAmount,
           vendorSettlementAmount: financials.lines[index].vendorSettlementAmount,
+          // Pricing snapshot — what this line was priced at the moment of the order.
+          markupPercent: item.markupPercent,
+          unitMarkupAmount: Math.max(0, Math.round((item.price - item.vendorPrice + Number.EPSILON) * 100) / 100),
+          platformSellingPrice: item.price,
+          totalVendorAmount: Math.round((item.vendorLineSubtotal - item.vendorLineDiscount + Number.EPSILON) * 100) / 100,
+          totalSellingAmount: Math.round((item.lineSubtotal - item.lineDiscount + Number.EPSILON) * 100) / 100,
+          totalAdminProfit:
+            Math.round((financials.lines[index].markupAmount + financials.lines[index].commissionAmount + Number.EPSILON) * 100) / 100,
           quantity: item.quantity,
           modifiers: item.modifiers,
           itemTotal: item.itemTotal,

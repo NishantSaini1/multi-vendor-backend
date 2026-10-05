@@ -1,5 +1,5 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { VENDOR_STATUS, APPROVAL_STATUS, DAYS_OF_WEEK, PRICING_MODELS, DISCOUNT_TYPES } from '../constants/enums';
+import { VENDOR_STATUS, APPROVAL_STATUS, DAYS_OF_WEEK, PRICING_MODELS } from '../constants/enums';
 import { hidePasswordInJson } from '../utils/schemaSecurity';
 
 export interface IVendorTemporaryClosure {
@@ -45,12 +45,10 @@ export interface IVendor extends Document {
   ratingCount: number;
   status: string;
   approvalStatus: string;
-  // Pricing model (see PRICING_MODELS) — COMMISSION by default. markupType/
-  // markupValue only apply when pricingModel is MARKUP: the platform adds this
-  // % (or flat amount per unit) on top of the vendor's price for customers.
+  // Pricing model (see PRICING_MODELS) — COMMISSION by default. Under MARKUP
+  // there is no seller-level markup: each product carries its own markupPercent
+  // (see VendorFoodItem / InstamartProduct).
   pricingModel: string;
-  markupType: string;
-  markupValue: number;
   // Commission % the platform keeps when pricingModel is COMMISSION — set once
   // on the vendor profile (never per product) and applied to every item the
   // vendor sells. Unset on vendors that still rely on the older Commission
@@ -112,8 +110,6 @@ const vendorSchema = new Schema<IVendor>(
     status: { type: String, enum: Object.values(VENDOR_STATUS), default: VENDOR_STATUS.ACTIVE },
     approvalStatus: { type: String, enum: Object.values(APPROVAL_STATUS), default: APPROVAL_STATUS.PENDING },
     pricingModel: { type: String, enum: Object.values(PRICING_MODELS), default: PRICING_MODELS.COMMISSION },
-    markupType: { type: String, enum: Object.values(DISCOUNT_TYPES), default: DISCOUNT_TYPES.PERCENTAGE },
-    markupValue: { type: Number, default: 0, min: 0 },
     commissionPercent: { type: Number, min: 0, max: 100 },
     isOpen: { type: Boolean, default: false },
     temporaryClosure: {
