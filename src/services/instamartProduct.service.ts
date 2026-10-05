@@ -234,6 +234,7 @@ export async function listInstamartProducts(filter: Record<string, unknown>, pag
   // model (see pricing.service.ts); store/admin views keep the store's price.
   if (user.userType === 'CUSTOMER') {
     enriched = await markupMartListings(enriched, (p) => (p.storeId as mongoose.Types.ObjectId).toString());
+    enriched = await withAvailableStock(enriched);
   }
   return { items: enriched, total };
 }
@@ -360,7 +361,8 @@ export async function getInstamartProductById(id: string, user: JwtPayload) {
       throw ApiError.notFound('Instamart product not found', 'INSTAMART_PRODUCT_NOT_FOUND');
     }
     const withStoreInfo = await withStore(enriched, product.storeId);
-    return markupMartListing(withStoreInfo, await loadPricingConfig('STORE', product.storeId.toString()));
+    const priced = await markupMartListing(withStoreInfo, await loadPricingConfig('STORE', product.storeId.toString()));
+    return (await withAvailableStock([priced as Record<string, unknown>]))[0];
   }
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
   if (!enriched) throw ApiError.notFound('Instamart product not found', 'INSTAMART_PRODUCT_NOT_FOUND');
@@ -456,4 +458,18 @@ export async function deleteInstamartVariant(productId: string, variantId: strin
 
   const variant = await InstamartVariant.findOneAndDelete({ _id: variantId, productId });
   if (!variant) throw ApiError.notFound('Instamart variant not found', 'INSTAMART_VARIANT_NOT_FOUND');
+}
+
+// Customer-facing stock: units still free to order (on hand minus reserved by
+// open orders), per listing, so the app can show "Only N left" and stop adds at
+// the real limit. A listing with no inventory row has 0 — it can't be ordered
+// (order creation rejects it with INSUFFICIENT_STOCK anyway).
+async function withAvailableStock(products: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
+  if (products.length === 0) return products;
+  const ids = products.map((p) => p._id);
+  const rows = await Inventory.find({ productId: { $in: ids } }).select('storeId productId currentStock reservedStock');
+  const stockByKey = new Map(
+    rows.map((r) => [`${r.storeId}:${r.productId}`, Math.max(0, r.currentStock - r.reservedStock)]),
+  );
+  return products.map((p) => ({ ...p, availableStock: stockByKey.get(`${p.storeId}:${p._id}`) ?? 0 }));
 }
