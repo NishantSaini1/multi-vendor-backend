@@ -1,6 +1,7 @@
 import {
   applyProductPricing,
-  effectiveMarkupPercent,
+  baseProductPrice,
+  effectiveMarkupAmount,
   markupProfitOf,
   pricingRequestFromInput,
   productForViewer,
@@ -24,12 +25,10 @@ const apply = (config: PricingConfig, user: JwtPayload, request: Parameters<type
 };
 
 describe('markup split', () => {
-  it('vendor payable = selling price / (1 + markup%); the rest is the platform profit', () => {
-    expect(vendorShareOf(30, 20)).toBe(25);
-    expect(markupProfitOf(30, 20)).toBe(5);
-    // Rice: ₹60 at 20% → vendor ₹50, profit ₹10 per unit
-    expect(vendorShareOf(60, 20)).toBe(50);
-    expect(markupProfitOf(60, 20)).toBe(10);
+  it('adds a fixed markup amount to the seller base price', () => {
+    expect(vendorShareOf(87, 10)).toBe(77);
+    expect(markupProfitOf(77, 10)).toBe(10);
+    expect(effectiveMarkupAmount(markup, { markupAmount: 10 })).toBe(10);
   });
 
   it('with no markup the vendor keeps the whole sale', () => {
@@ -37,11 +36,15 @@ describe('markup split', () => {
     expect(markupProfitOf(30, 0)).toBe(0);
   });
 
+  it('normalizes version-2 customer prices back to the seller base price', () => {
+    expect(baseProductPrice({ pricingSchemaVersion: 2, markupAmount: 10 }, 87)).toBe(77);
+  });
+
   it('markup only exists on a MARKUP seller, and only when set', () => {
-    expect(effectiveMarkupPercent(markup, { markupPercent: 20 })).toBe(20);
-    expect(effectiveMarkupPercent(markup, { markupPercent: 0 })).toBe(0);
-    expect(effectiveMarkupPercent(markup)).toBe(0);
-    expect(effectiveMarkupPercent(commission(10), { markupPercent: 20 })).toBe(0);
+    expect(effectiveMarkupAmount(markup, { markupAmount: 10 })).toBe(10);
+    expect(effectiveMarkupAmount(markup, { markupAmount: 0 })).toBe(0);
+    expect(effectiveMarkupAmount(markup)).toBe(0);
+    expect(effectiveMarkupAmount(commission(10), { markupAmount: 10 })).toBe(0);
   });
 });
 
@@ -83,25 +86,33 @@ describe('product pricing rules', () => {
   });
 
   describe('MARKUP — a per-product, admin-only markup', () => {
-    it('₹30 at 20%: the platform profit is ₹5 per unit', () => {
-      expect(apply(markup, admin, { sellingPrice: 30, markupPercent: 20 }, 32)).toMatchObject({ sellingPrice: 30, markupPercent: 20, markupAmount: 5 });
+    it('adds the manual amount on top of the vendor base price', () => {
+      expect(apply(markup, admin, { sellingPrice: 77, markupAmount: 10 }, 80)).toMatchObject({
+        sellingPrice: 77,
+        markupAmount: 10,
+        pricingSchemaVersion: 3,
+      });
     });
 
-    it('two products of the same seller carry different markups', () => {
-      expect(apply(markup, admin, { sellingPrice: 30, markupPercent: 20 }).markupAmount).toBe(5);
-      expect(apply(markup, admin, { sellingPrice: 60, markupPercent: 20 }).markupAmount).toBe(10);
-      expect(apply(markup, admin, { sellingPrice: 45, markupPercent: 10 }).markupAmount).toBe(4.09);
+    it('converts a legacy percentage request to a fixed amount', () => {
+      expect(apply(markup, admin, { sellingPrice: 30, markupPercent: 20 })).toMatchObject({
+        sellingPrice: 25,
+        markupAmount: 5,
+      });
     });
 
-    it('a seller changing the price re-derives the markup amount, and cannot set the markup', () => {
-      const doc = apply(markup, admin, { sellingPrice: 30, markupPercent: 20 });
-      apply(markup, seller, { sellingPrice: 60 }, undefined, doc);
-      expect(doc).toMatchObject({ sellingPrice: 60, markupPercent: 20, markupAmount: 10 });
-      expect(() => apply(markup, seller, { sellingPrice: 30, markupPercent: 20 })).toThrow(/Only the platform/);
+    it('keeps the manually entered amount when the seller changes their base price', () => {
+      const doc = apply(markup, admin, { sellingPrice: 77, markupAmount: 10 });
+      apply(markup, seller, { sellingPrice: 80 }, undefined, doc);
+      expect(doc).toMatchObject({ sellingPrice: 80, markupAmount: 10 });
+    });
+
+    it('does not allow a seller to set the platform markup', () => {
+      expect(() => apply(markup, seller, { sellingPrice: 30, markupAmount: 10 })).toThrow(/Only the platform/);
     });
 
     it('a markup can only be set on a MARKUP seller', () => {
-      expect(() => apply(commission(20), admin, { sellingPrice: 30, markupPercent: 20 })).toThrow(/MARKUP pricing model/);
+      expect(() => apply(commission(20), admin, { sellingPrice: 30, markupAmount: 10 })).toThrow(/MARKUP pricing model/);
     });
 
     it('a MARKUP product with no markup yet has no profit', () => {
@@ -110,21 +121,21 @@ describe('product pricing rules', () => {
   });
 
   describe('COMMISSION — nothing about markup is stored', () => {
-    it('has no markup amount, and remembers a stored markup % without using it', () => {
-      expect(apply(commission(20), seller, { sellingPrice: 30 }, undefined, { markupPercent: 15 })).toMatchObject({ markupPercent: 15, markupAmount: 0 });
+    it('has no markup amount', () => {
+      expect(apply(commission(20), seller, { sellingPrice: 30 }, undefined, { markupAmount: 15 })).toMatchObject({ markupPercent: 0, markupAmount: 0 });
     });
   });
 
   describe('request mapping', () => {
     it('takes the selling price from the price field the apps send, or platformSellingPrice', () => {
-      expect(pricingRequestFromInput({ sellingPrice: 30 }, 'sellingPrice')).toEqual({ sellingPrice: 30, markupPercent: undefined });
+      expect(pricingRequestFromInput({ sellingPrice: 30 }, 'sellingPrice')).toEqual({ sellingPrice: 30, markupAmount: undefined, markupPercent: undefined });
       expect(pricingRequestFromInput({ price: 30 }, 'price').sellingPrice).toBe(30);
       expect(pricingRequestFromInput({ price: 20, platformSellingPrice: 30 }, 'price').sellingPrice).toBe(30);
     });
 
     it('drops a vendorOriginalPrice from an older app and removes the pricing keys from the body', () => {
-      const body: Record<string, unknown> = { price: 30, vendorOriginalPrice: 25, markupPercent: 5, sku: 'x' };
-      expect(pricingRequestFromInput(body, 'price')).toEqual({ sellingPrice: 30, markupPercent: 5 });
+      const body: Record<string, unknown> = { price: 30, vendorOriginalPrice: 25, markupAmount: 5, sku: 'x' };
+      expect(pricingRequestFromInput(body, 'price')).toEqual({ sellingPrice: 30, markupAmount: 5, markupPercent: undefined });
       expect(body).toEqual({ sku: 'x' });
     });
   });
@@ -184,17 +195,17 @@ describe('order financials engine', () => {
   });
 
   describe('MARKUP model', () => {
-    it('₹30 at 20% × 3: customer pays ₹90, vendor is settled ₹75, admin profit ₹15', () => {
-      const customerAmount = 90;
+    it('₹77 base + ₹10 markup × 3: customer pays ₹261, vendor gets ₹231, admin profit ₹30', () => {
+      const customerAmount = 261;
       const { order, lines } = buildOrderFinancials({
         ...base,
         config: markup,
         commission: { type: 'PERCENTAGE', value: 99 }, // must be ignored
-        lines: [{ customerAmount, vendorAmount: vendorShareOf(customerAmount, 20) }],
-        orderTotal: 90,
+        lines: [{ customerAmount, vendorAmount: 231 }],
+        orderTotal: 261,
       });
-      expect(lines[0]).toEqual({ commissionAmount: 0, markupAmount: 15, vendorSettlementAmount: 75 });
-      expect(order).toMatchObject({ pricingModel: 'MARKUP', customerPrice: 90, vendorBaseAmount: 75, markupAmount: 15, vendorSettlementAmount: 75, platformRevenue: 15 });
+      expect(lines[0]).toEqual({ commissionAmount: 0, markupAmount: 30, vendorSettlementAmount: 231 });
+      expect(order).toMatchObject({ pricingModel: 'MARKUP', customerPrice: 261, vendorBaseAmount: 231, markupAmount: 30, vendorSettlementAmount: 231, platformRevenue: 30 });
       expect(order.commissionAmount).toBeUndefined();
     });
 
@@ -204,8 +215,8 @@ describe('order financials engine', () => {
         config: markup,
         commission: null,
         lines: [
-          { customerAmount: 120, vendorAmount: vendorShareOf(120, 20) }, // 100 / 20
-          { customerAmount: 220, vendorAmount: vendorShareOf(220, 10) }, // 200 / 20
+          { customerAmount: 120, vendorAmount: 100 },
+          { customerAmount: 220, vendorAmount: 200 },
         ],
         orderTotal: 340,
       });
@@ -261,24 +272,41 @@ describe('order financials engine', () => {
   });
 
   describe('previewFinancials', () => {
-    it('₹30 at 20% markup: the vendor gets ₹25, the platform ₹5', () => {
-      expect(previewFinancials({ sellingPrice: 30, quantity: 1, config: markup, markupPercent: 20 })).toMatchObject({
-        sellingPrice: 30,
-        markupPercent: 20,
-        markupPerUnit: 5,
-        customerPrice: 30,
-        vendorSettlementAmount: 25,
-        platformRevenue: 5,
+    it('settles a ₹77 base price plus ₹10 markup as ₹174 customer / ₹154 vendor for quantity 2', () => {
+      const { order, lines } = buildOrderFinancials({
+        ...base,
+        config: markup,
+        commission: null,
+        lines: [{ customerAmount: 174, vendorAmount: 154 }],
+        orderTotal: 174,
+      });
+      expect(lines[0]).toEqual({ commissionAmount: 0, markupAmount: 20, vendorSettlementAmount: 154 });
+      expect(order).toMatchObject({
+        customerPrice: 174,
+        vendorBaseAmount: 154,
+        markupAmount: 20,
+        vendorSettlementAmount: 154,
+        platformRevenue: 20,
+        platformProfit: 20,
       });
     });
 
-    it('MARKUP with no markup % has no profit', () => {
+    it('adds the fixed per-unit markup to the customer price', () => {
+      expect(previewFinancials({ sellingPrice: 77, quantity: 3, config: markup, markupAmount: 10 })).toMatchObject({
+        sellingPrice: 77,
+        markupAmountPerUnit: 10,
+        customerPrice: 261,
+        vendorSettlementAmount: 231,
+        platformRevenue: 30,
+      });
+    });
+
+    it('MARKUP with no markup amount has no profit', () => {
       expect(previewFinancials({ sellingPrice: 30, quantity: 1, config: markup })).toMatchObject({ markupAmount: 0, vendorSettlementAmount: 30 });
     });
 
     it('applies the commission percent under COMMISSION and ignores any markup', () => {
-      expect(previewFinancials({ sellingPrice: 100, quantity: 3, config: commission(10), markupPercent: 50 })).toMatchObject({
-        markupPercent: 0,
+      expect(previewFinancials({ sellingPrice: 100, quantity: 3, config: commission(10), markupAmount: 50 })).toMatchObject({
         customerPrice: 300,
         commissionAmount: 30,
         vendorSettlementAmount: 270,
@@ -288,20 +316,24 @@ describe('order financials engine', () => {
 });
 
 describe('who sees which product fields', () => {
-  const product = { price: 30, mrp: 32, discount: 0, markupPercent: 20, markupAmount: 5, vendorOriginalPrice: 25, platformSellingPrice: 30, costPrice: 20 };
+  const product = { price: 25, mrp: 32, discount: 0, markupPercent: 0, markupAmount: 5, pricingSchemaVersion: 3, vendorOriginalPrice: 25, platformSellingPrice: 30, costPrice: 20 };
 
   it('admins see the markup', () => {
-    expect(productForViewer(product, 'ADMIN')).toBe(product);
+    expect(productForViewer(product, 'ADMIN')).toEqual(product);
   });
 
-  it('sellers see MRP, selling price and discount — never the markup', () => {
+  it('sellers see the base price and never the markup', () => {
     for (const viewer of ['VENDOR', 'STORE']) {
-      expect(productForViewer(product, viewer)).toEqual({ price: 30, mrp: 32, discount: 0, costPrice: 20 });
+      expect(productForViewer(product, viewer)).toEqual({ price: 25, mrp: 32, discount: 0, pricingSchemaVersion: 3, costPrice: 20 });
     }
   });
 
+  it('customers see the base price plus markup without internal fields', () => {
+    expect(productForViewer(product, 'CUSTOMER')).toEqual({ price: 30, mrp: 32, discount: 0, pricingSchemaVersion: 3 });
+  });
+
   it('customers also lose the seller cost price', () => {
-    expect(productForViewer(product, 'CUSTOMER')).toEqual({ price: 30, mrp: 32, discount: 0 });
+    expect(productForViewer(product, 'CUSTOMER')).toEqual({ price: 30, mrp: 32, discount: 0, pricingSchemaVersion: 3 });
   });
 });
 

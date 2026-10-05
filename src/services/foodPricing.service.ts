@@ -5,7 +5,7 @@ import { ModifierGroup } from '../models/ModifierGroup';
 import { ModifierOption } from '../models/ModifierOption';
 import { IOrderItemModifier } from '../models/OrderItem';
 import { ApiError } from '../utils/ApiError';
-import { effectiveMarkupPercent, loadPricingConfig } from './pricing.service';
+import { baseProductPrice, customerPriceOf, effectiveMarkupAmount, loadPricingConfig } from './pricing.service';
 import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 // Single source of truth for "resolve + validate + price one Food line item"
@@ -15,18 +15,16 @@ import { GENERIC_STATUS, GLOBAL_FOOD_ITEM_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY 
 // determined. Never trust a client-supplied price/name — everything here is
 // read fresh from the DB.
 //
-// `unitPrice`, `modifiersUnitTotal` and `modifiers[].price` are exactly the
-// stored selling prices — what the customer pays. Under MARKUP the item's
-// markup % only splits that amount between the vendor and the platform (see
-// orderFinancials.service.ts); it never changes what is charged.
+// `unitPrice` is the customer price after adding the product's fixed markup.
+// Vendor base price and markup are also returned separately for settlement.
 export interface ResolvedFoodLineItem {
   vendorFoodItem: IVendorFoodItem;
   globalItem: IFoodProduct;
   variant?: IFoodVariant;
   name: string;
   unitPrice: number;
-  // The item's own markup % in effect (0 unless the vendor is on MARKUP).
-  markupPercent: number;
+  vendorUnitPrice: number;
+  markupAmount: number;
   // The printed MRP, when the vendor set one.
   mrp?: number;
   modifiers: IOrderItemModifier[];
@@ -138,9 +136,9 @@ export async function resolveFoodLineItem(
     throw ApiError.unprocessable('This item is not currently available', 'PRODUCT_NOT_AVAILABLE');
   }
 
-  // The item's stored selling price (or its variant's) is what the customer pays.
+  // The stored price (or variant price) is the seller's base price.
   const pricing = await loadPricingConfig('VENDOR', vendorFoodItem.vendorId.toString());
-  let unitPrice = vendorFoodItem.price;
+  let vendorUnitPrice = baseProductPrice(vendorFoodItem, vendorFoodItem.price);
   let variant: IFoodVariant | undefined;
   if (input.variantId) {
     const found = await FoodVariant.findById(input.variantId);
@@ -151,10 +149,13 @@ export async function resolveFoodLineItem(
       throw ApiError.unprocessable(`${globalItem.name} (${found.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
     }
     variant = found;
-    unitPrice = found.price;
+    vendorUnitPrice = baseProductPrice(vendorFoodItem, found.price);
   }
 
   const { snapshots: modifiers, unitTotal: modifiersUnitTotal } = await resolveModifierSelections(vendorFoodItem.id, input.modifiers);
+
+  const markupAmount = effectiveMarkupAmount(pricing, vendorFoodItem);
+  const unitPrice = customerPriceOf(vendorUnitPrice, markupAmount);
 
   return {
     vendorFoodItem,
@@ -162,7 +163,8 @@ export async function resolveFoodLineItem(
     variant,
     name: globalItem.name,
     unitPrice,
-    markupPercent: effectiveMarkupPercent(pricing, vendorFoodItem),
+    vendorUnitPrice,
+    markupAmount,
     mrp: vendorFoodItem.mrp,
     modifiers,
     modifiersUnitTotal,

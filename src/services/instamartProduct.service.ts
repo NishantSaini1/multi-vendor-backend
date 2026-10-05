@@ -10,7 +10,16 @@ import { JwtPayload } from '../utils/jwt';
 import { assertOwnerOrLocationAccess, locationScopeFilter } from '../middleware/rbac.middleware';
 import { APPROVAL_STATUS, GENERIC_STATUS } from '../constants/enums';
 import { assertCategoryAndSubcategory } from './instamartGlobalProduct.service';
-import { applyProductPricing, hasPricingRequest, loadPricingConfig, pricingRequestFromInput, productForViewer, toPricingConfig } from './pricing.service';
+import {
+  applyProductPricing,
+  baseProductPrice,
+  customerPriceOf,
+  hasPricingRequest,
+  loadPricingConfig,
+  pricingRequestFromInput,
+  productForViewer,
+  toPricingConfig,
+} from './pricing.service';
 
 export function instamartProductListFilter(user: JwtPayload): Record<string, unknown> {
   if (user.userType === 'STORE') return { storeId: user.userId };
@@ -72,16 +81,25 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
   const statsByProductId = new Map(stats.map((s) => [s._id.toString(), s]));
   return enriched.map((plain) => {
     const stat = statsByProductId.get((plain._id as mongoose.Types.ObjectId).toString());
-    const basePrice = plain.sellingPrice as number;
+    const basePrice = baseProductPrice(
+      {
+        pricingSchemaVersion: plain.pricingSchemaVersion as number | undefined,
+        markupAmount: plain.markupAmount as number | undefined,
+      },
+      plain.sellingPrice as number,
+    );
     const baseMrp = plain.mrp as number;
+    const markupAmount = Number(plain.markupAmount ?? 0);
+    const variantBasePrice = stat ? baseProductPrice(plain, stat.variantPriceFrom) : undefined;
+    const minimumVariantBasePrice = stat ? baseProductPrice(plain, stat.minVariantPrice) : undefined;
     let priceFrom = basePrice;
     let mrpFrom = baseMrp;
     // which pack variantPriceFrom belongs to (null = the base pack), so a
     // card can label the price with the right pack size
     let variantIdFrom: string | null = null;
     let variantNameFrom: string | null = null;
-    if (stat && (stat.isDefault || stat.variantPriceFrom < basePrice)) {
-      priceFrom = stat.variantPriceFrom;
+    if (stat && (stat.isDefault || (variantBasePrice ?? basePrice) < basePrice)) {
+      priceFrom = variantBasePrice ?? basePrice;
       mrpFrom = stat.variantMrpFrom;
       variantIdFrom = stat.variantIdFrom.toString();
       variantNameFrom = stat.variantNameFrom;
@@ -89,15 +107,15 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
     return {
       ...plain,
       hasVariants: !!stat,
-      variantPriceFrom: priceFrom,
+      variantPriceFrom: customerPriceOf(priceFrom, markupAmount),
       variantMrpFrom: mrpFrom,
       variantIdFrom,
       variantNameFrom,
       // cheapest pack of all (base + ACTIVE variants)
-      minPackPrice: stat ? Math.min(basePrice, stat.minVariantPrice) : basePrice,
+      minPackPrice: customerPriceOf(stat ? Math.min(basePrice, minimumVariantBasePrice ?? basePrice) : basePrice, markupAmount),
       // the cheapest variant on its own (raw) — lets the customer transform
       // price the variants and the base pack separately under MARKUP
-      minVariantPrice: stat ? stat.minVariantPrice : null,
+      minVariantPrice: stat && minimumVariantBasePrice !== undefined ? customerPriceOf(minimumVariantBasePrice, markupAmount) : null,
       // pack sizes to choose from: every ACTIVE variant + the base pack
       variantCount: stat ? stat.count + 1 : 1,
     };
@@ -304,7 +322,7 @@ export async function createInstamartProduct(
             sellingPrice: pricing.sellingPrice,
             markupPercent: pricing.markupPercent,
             markupAmount: pricing.markupAmount,
-            pricingSchemaVersion: 2,
+            pricingSchemaVersion: 3,
             discount: data.discount ?? 0,
             sortOrder: data.sortOrder ?? 0,
           },

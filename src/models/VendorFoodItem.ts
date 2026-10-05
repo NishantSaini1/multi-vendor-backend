@@ -11,18 +11,13 @@ export interface IVendorFoodItem extends Document {
   _id: Types.ObjectId;
   vendorId: Types.ObjectId;
   globalFoodItemId: Types.ObjectId;
-  // Selling Price — what the customer pays for this item, for BOTH pricing
-  // models (never greater than the MRP). The seller sets it.
+  // Seller base price; under MARKUP, customers pay this plus markupAmount.
   price: number;
-  // MARKUP pricing model, internal to the platform (admins only): this item's
-  // own markup %, and the platform's profit per unit it implies —
-  // markupAmount = price − price / (1 + markupPercent / 100), kept in sync by
-  // pricing.service. Never shown to customers or sellers. Under COMMISSION the
-  // effective markup is 0.
+  // MARKUP pricing model, internal to the platform (admins only): fixed per-unit
+  // amount added to `price` for customers. Never shown to sellers.
   markupPercent: number;
   markupAmount: number;
-  // 2 = priced in the current model (selling price stored, markup internal). Products
-  // without it predate it and are converted by the migrate:product-markup script.
+  // 3 = seller base price stored; the customer price adds markupAmount.
   pricingSchemaVersion?: number;
   mrp?: number;
   costPrice?: number;

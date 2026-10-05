@@ -86,7 +86,7 @@ export async function addVendorFoodItem(
       price: pricing.price,
       markupPercent: pricing.markupPercent,
       markupAmount: pricing.markupAmount,
-      pricingSchemaVersion: 2,
+      pricingSchemaVersion: 3,
       mrp: data.mrp,
       costPrice: data.costPrice,
       preparationTime: data.preparationTime,

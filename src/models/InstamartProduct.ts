@@ -14,18 +14,13 @@ export interface IInstamartProduct extends Document {
   categoryId: Types.ObjectId;
   subcategoryId?: Types.ObjectId;
   sku?: string;
-  // Selling Price — what the customer pays, for BOTH pricing models (never
-  // greater than the product's printed MRP). The store sets it.
+  // Seller base price. Customers pay this plus markupAmount under MARKUP.
   sellingPrice: number;
-  // MARKUP pricing model, internal to the platform (admins only): this
-  // product's own markup %, and the platform's profit per unit it implies —
-  // markupAmount = sellingPrice − sellingPrice / (1 + markupPercent / 100),
-  // kept in sync by pricing.service. Never shown to customers or sellers. Under
-  // COMMISSION the effective markup is 0.
+  // MARKUP pricing model, internal to the platform (admins only): fixed amount
+  // added to sellingPrice for customers. Never shown to sellers.
   markupPercent: number;
   markupAmount: number;
-  // 2 = priced in the current model (selling price stored, markup internal). Products
-  // without it predate it and are converted by the migrate:product-markup script.
+  // 3 = seller base price stored; the customer price adds markupAmount.
   pricingSchemaVersion?: number;
   discount: number;
   sortOrder: number;

@@ -35,7 +35,9 @@ export const createInstamartProductSchema = z.object({
       // The Selling Price (what customers pay): `sellingPrice`, or `platformSellingPrice` as an alias.
       sellingPrice: z.number().nonnegative().optional(),
       platformSellingPrice: z.number().nonnegative().optional(),
-      // Admin-only: this product's markup % (MARKUP stores).
+      // Admin-only: fixed per-unit markup amount (MARKUP stores).
+      markupAmount: z.number().nonnegative().optional(),
+      // Temporary compatibility for older admin clients.
       markupPercent: z.number().min(0).max(1000).optional(),
       discount: z.number().nonnegative().default(0),
       sortOrder: z.number().int().default(0),
@@ -53,7 +55,9 @@ export const updateInstamartProductSchema = z.object({
     sellingPrice: z.number().nonnegative().optional(),
     // Alias of `sellingPrice`.
     platformSellingPrice: z.number().nonnegative().optional(),
-    // Admin-only: this product's markup % (MARKUP stores) — internal, never shown to sellers or customers.
+    // Admin-only fixed per-unit markup amount (MARKUP stores).
+    markupAmount: z.number().nonnegative().optional(),
+    // Temporary compatibility for older admin clients.
     markupPercent: z.number().min(0).max(1000).optional(),
     discount: z.number().nonnegative().optional(),
     sortOrder: z.number().int().optional(),

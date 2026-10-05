@@ -18,7 +18,9 @@ export const createVendorFoodItemSchema = z.object({
     // The Selling Price (what customers pay): `price`, or `platformSellingPrice` as an alias.
     price: z.number().nonnegative().optional(),
     platformSellingPrice: z.number().nonnegative().optional(),
-    // Admin-only: this item's markup % (MARKUP vendors).
+    // Admin-only: fixed per-unit markup amount (MARKUP vendors).
+    markupAmount: z.number().nonnegative().optional(),
+    // Temporary compatibility for older admin clients.
     markupPercent: z.number().min(0).max(1000).optional(),
     mrp: z.number().nonnegative().optional(),
     costPrice: z.number().nonnegative().optional(),
@@ -33,7 +35,9 @@ export const updateVendorFoodItemSchema = z.object({
     price: z.number().nonnegative().optional(),
     // Alias of `price`.
     platformSellingPrice: z.number().nonnegative().optional(),
-    // Admin-only: this item's markup % (MARKUP vendors) — internal, never shown to sellers or customers.
+    // Admin-only fixed per-unit markup amount (MARKUP vendors).
+    markupAmount: z.number().nonnegative().optional(),
+    // Temporary compatibility for older admin clients.
     markupPercent: z.number().min(0).max(1000).optional(),
     mrp: z.number().nonnegative().optional(),
     costPrice: z.number().nonnegative().optional(),

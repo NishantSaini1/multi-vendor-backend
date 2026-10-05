@@ -23,7 +23,13 @@ import { generateOrderNumber } from '../utils/orderNumber';
 import { checkServiceability } from './serviceability.service';
 import { haversineDistanceKm } from '../utils/geo';
 import { computeLine, resolveFoodLineItem } from './foodPricing.service';
-import { effectiveMarkupPercent, isMarkupModel, loadPricingConfig, vendorShareOf } from './pricing.service';
+import {
+  baseProductPrice,
+  customerPriceOf,
+  effectiveMarkupAmount,
+  isMarkupModel,
+  loadPricingConfig,
+} from './pricing.service';
 import { assertDeliveryCapacity } from './deliveryCapacity.service';
 import { buildOrderFinancials, resolveSellerCommission } from './orderFinancials.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
@@ -69,16 +75,15 @@ interface PreparedOrderItem {
   productId: string;
   variantId?: string;
   name: string;
-  // Customer-facing unit price (vendor price + markup under the MARKUP model).
+  // Customer-facing unit price (seller base price + fixed markup).
   price: number;
-  // The vendor's own original unit price, and the same line's subtotal/discount
-  // priced at it — what the vendor is owed under MARKUP (see pricing.service).
+  // The vendor's base unit price, and the same line's subtotal/discount priced
+  // at it — what the vendor is owed under MARKUP.
   vendorPrice: number;
   vendorLineSubtotal: number;
   vendorLineDiscount: number;
-  // The product's own markup % in effect (0 unless the seller is on MARKUP) —
-  // snapshotted onto the order item, with the printed MRP and discount %.
-  markupPercent: number;
+  // The fixed per-unit platform markup at order time.
+  markupAmount: number;
   mrp?: number;
   discountPercent: number;
   quantity: number;
@@ -145,23 +150,19 @@ async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[])
       0,
       resolved.modifiersUnitTotal,
     );
-    // Under MARKUP the vendor is settled their share of the sale (see pricing.service's vendorShareOf).
-    const vendorLine = {
-      lineSubtotal: vendorShareOf(lineSubtotal, resolved.markupPercent),
-      lineDiscount: vendorShareOf(lineDiscount, resolved.markupPercent),
-    };
+    const vendorLineSubtotal = (resolved.vendorUnitPrice + resolved.modifiersUnitTotal) * input.quantity;
 
     prepared.push({
       productId: resolved.vendorFoodItem.id,
       variantId: input.variantId,
       name: resolved.name,
       price: resolved.unitPrice,
-      vendorPrice: vendorShareOf(resolved.unitPrice, resolved.markupPercent),
-      markupPercent: resolved.markupPercent,
+      vendorPrice: resolved.vendorUnitPrice,
+      markupAmount: resolved.markupAmount,
       mrp: resolved.mrp,
       discountPercent: 0,
-      vendorLineSubtotal: vendorLine.lineSubtotal,
-      vendorLineDiscount: vendorLine.lineDiscount,
+      vendorLineSubtotal,
+      vendorLineDiscount: 0,
       quantity: input.quantity,
       modifiers: resolved.modifiers,
       itemTotal,
@@ -209,8 +210,9 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
     // sellingPrice/mrp (its own pack size/unit) is always a valid, orderable
     // choice in its own right, same as any named variant — variants are
     // additional pack-size options alongside it, not a replacement for it.
-    // The stored selling price of the product's own pack (or its variant) is what the customer pays.
-    let unitPrice = product.sellingPrice;
+    // Product and variant prices are seller base prices. The fixed product
+    // markup is added to each selected unit for the customer's price.
+    let vendorUnitPrice = baseProductPrice(product, product.sellingPrice);
     if (input.variantId) {
       const variant = await InstamartVariant.findById(input.variantId);
       if (!variant || variant.productId.toString() !== product.id) {
@@ -219,8 +221,10 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       if (variant.status !== GENERIC_STATUS.ACTIVE) {
         throw ApiError.unprocessable(`${globalProduct.name} (${variant.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
       }
-      unitPrice = variant.sellingPrice;
+      vendorUnitPrice = baseProductPrice(product, variant.sellingPrice);
     }
+    const markupAmount = effectiveMarkupAmount(pricing, product);
+    const unitPrice = customerPriceOf(vendorUnitPrice, markupAmount);
 
     // Authoritative stock check happens again inside the transaction below;
     // this pre-check just fails fast for the common case.
@@ -235,17 +239,15 @@ async function prepareInstamartItems(storeId: string, items: CreateOrderItemInpu
       product.discount,
       globalProduct.gst,
     );
-    // Under MARKUP the store is settled its share of the sale (see pricing.service's vendorShareOf).
-    const markupPercent = effectiveMarkupPercent(pricing, product);
-    const vendorLine = { lineSubtotal: vendorShareOf(lineSubtotal, markupPercent), lineDiscount: vendorShareOf(lineDiscount, markupPercent) };
+    const vendorLine = computeLine(vendorUnitPrice, input.quantity, product.discount, 0);
 
     prepared.push({
       productId: product.id,
       variantId: input.variantId,
       name: globalProduct.name,
       price: unitPrice,
-      vendorPrice: vendorShareOf(unitPrice, markupPercent),
-      markupPercent,
+      vendorPrice: vendorUnitPrice,
+      markupAmount,
       mrp: globalProduct.mrp,
       discountPercent: product.discount ?? 0,
       vendorLineSubtotal: vendorLine.lineSubtotal,
@@ -560,10 +562,8 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           commissionAmount: financials.lines[index].commissionAmount,
           markupAmount: financials.lines[index].markupAmount,
           vendorSettlementAmount: financials.lines[index].vendorSettlementAmount,
-          // Pricing snapshot — what this line was priced at the moment of the order.
-          markupPercent: item.markupPercent,
           // Markup only exists under MARKUP; under COMMISSION the platform's cut is the commission.
-          unitMarkupAmount: isMarkupModel(pricingConfig) ? Math.max(0, Math.round((item.price - item.vendorPrice + Number.EPSILON) * 100) / 100) : 0,
+          unitMarkupAmount: isMarkupModel(pricingConfig) ? item.markupAmount : 0,
           totalVendorAmount: Math.round((item.vendorLineSubtotal - item.vendorLineDiscount + Number.EPSILON) * 100) / 100,
           totalSellingAmount: Math.round((item.lineSubtotal - item.lineDiscount + Number.EPSILON) * 100) / 100,
           totalAdminProfit:

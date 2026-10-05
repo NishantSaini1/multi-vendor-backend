@@ -399,7 +399,6 @@ export async function getOwnProductEarnings(sellerId: string, query: { productId
     name: r.name,
     pricingModel: r.pricingModel,
     orders: r.orders,
-    markupPercent: r.markupPercent,
     ...toSellerMetrics(r),
   }));
   return { rows: mapped, totals: sumSellerMetrics(mapped) };
@@ -428,17 +427,16 @@ export interface ProductProfitRow extends ProfitMetrics {
   sellerName: string;
   pricingModel: string;
   orders: number;
-  // Weighted markup % actually charged over the period (from the order
-  // snapshots) — 0 for COMMISSION sales.
-  markupPercent: number;
+  // Average platform markup profit per unit over the period.
+  markupAmountPerUnit: number;
   // The product as listed NOW — it can differ from what was charged then.
-  current?: { markupPercent: number; sellingPrice: number; categoryId?: string; categoryName?: string };
+  current?: { markupAmount: number; sellingPrice: number; categoryId?: string; categoryName?: string };
 }
 
 async function currentListings(productIds: Types.ObjectId[]) {
   const [foodItems, martItems] = await Promise.all([
-    VendorFoodItem.find({ _id: { $in: productIds } }).select('price markupPercent globalFoodItemId'),
-    InstamartProduct.find({ _id: { $in: productIds } }).select('sellingPrice markupPercent categoryId'),
+    VendorFoodItem.find({ _id: { $in: productIds } }).select('price markupAmount pricingSchemaVersion globalFoodItemId'),
+    InstamartProduct.find({ _id: { $in: productIds } }).select('sellingPrice markupAmount pricingSchemaVersion categoryId'),
   ]);
   const globals = foodItems.length ? await FoodProduct.find({ _id: { $in: foodItems.map((i) => i.globalFoodItemId) } }).select('categoryId') : [];
   const globalCategory = new Map(globals.map((g) => [g.id as string, g.categoryId?.toString()]));
@@ -453,8 +451,8 @@ async function currentListings(productIds: Types.ObjectId[]) {
   for (const item of foodItems) {
     const categoryId = globalCategory.get(item.globalFoodItemId.toString());
     info.set(item.id, {
-      markupPercent: item.markupPercent ?? 0,
-      sellingPrice: item.price,
+      markupAmount: item.markupAmount ?? 0,
+      sellingPrice: item.pricingSchemaVersion === 2 ? Math.max(0, item.price - (item.markupAmount ?? 0)) : item.price,
       categoryId,
       categoryName: categoryId ? categoryName.get(categoryId) : undefined,
     });
@@ -462,8 +460,8 @@ async function currentListings(productIds: Types.ObjectId[]) {
   for (const item of martItems) {
     const categoryId = item.categoryId?.toString();
     info.set(item.id, {
-      markupPercent: item.markupPercent ?? 0,
-      sellingPrice: item.sellingPrice,
+      markupAmount: item.markupAmount ?? 0,
+      sellingPrice: item.pricingSchemaVersion === 2 ? Math.max(0, item.sellingPrice - (item.markupAmount ?? 0)) : item.sellingPrice,
       categoryId,
       categoryName: categoryId ? categoryName.get(categoryId) : undefined,
     });
@@ -506,8 +504,10 @@ export async function getSellerProducts(filters: ProfitFilters) {
   ]);
   const result: ProductProfitRow[] = rows.map((row) => {
     const metrics = toMetrics(row);
-    // Vendor base the markup was added to = what the vendor was paid under MARKUP.
-    const markupPercent = row._id.pricingModel === PRICING_MODELS.MARKUP && metrics.vendorCost > 0 ? round2((metrics.markupProfit / metrics.vendorCost) * 100) : 0;
+    const markupAmountPerUnit =
+      row._id.pricingModel === PRICING_MODELS.MARKUP && metrics.itemsSold > 0
+        ? round2(metrics.markupProfit / metrics.itemsSold)
+        : 0;
     return {
       productId: String(row._id.productId),
       name: row.name as string,
@@ -517,7 +517,7 @@ export async function getSellerProducts(filters: ProfitFilters) {
       sellerName: sellerNames.get(String(row._id.vendorId ?? row._id.storeId)) ?? 'Unknown',
       pricingModel: row._id.pricingModel as string,
       orders: (row.orderIds as unknown[]).length,
-      markupPercent,
+      markupAmountPerUnit,
       current: current.get(String(row._id.productId)),
       ...metrics,
     };

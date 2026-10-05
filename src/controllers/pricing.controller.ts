@@ -41,7 +41,7 @@ export const preview = catchAsync(async (req: Request, res: Response) => {
       pricingModel: q.pricingModel,
       commissionPercent: q.commissionPercent !== undefined ? Number(q.commissionPercent) : undefined,
     }),
-    markupPercent: q.markupPercent !== undefined ? Number(q.markupPercent) : undefined,
+    markupAmount: q.markupAmount !== undefined ? Number(q.markupAmount) : undefined,
     deliveryFee: q.deliveryFee ? Number(q.deliveryFee) : undefined,
     paymentMethod: q.paymentMethod,
   });

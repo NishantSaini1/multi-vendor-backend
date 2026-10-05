@@ -30,7 +30,9 @@ export const pricingPreviewQuerySchema = z.object({
     quantity: z.coerce.number().int().positive().max(1000).optional(),
     pricingModel,
     commissionPercent: z.coerce.number().min(0).max(100).optional(),
-    // The product's own markup % (MARKUP only).
+    // The product's fixed per-unit markup amount (MARKUP only).
+    markupAmount: z.coerce.number().nonnegative().optional(),
+    // Temporary compatibility for older admin clients.
     markupPercent: z.coerce.number().min(0).max(1000).optional(),
     deliveryFee: z.coerce.number().nonnegative().optional(),
     paymentMethod: z.enum(Object.values(PAYMENT_METHODS) as [string, ...string[]]).optional(),

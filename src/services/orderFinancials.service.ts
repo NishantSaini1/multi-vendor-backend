@@ -2,7 +2,7 @@ import { env } from '../config/env';
 import { DISCOUNT_TYPES, PRICING_MODELS } from '../constants/enums';
 import { PAYMENT_METHODS } from '../constants/paymentStatus';
 import * as commissionService from './commission.service';
-import { PricingConfig, effectiveMarkupPercent, isMarkupModel, round2, vendorShareOf } from './pricing.service';
+import { PricingConfig, customerPriceOf, effectiveMarkupAmount, isMarkupModel, round2 } from './pricing.service';
 
 // The one pricing & settlement engine, shared by Food and Instamart orders.
 // For an order (always a single seller) it works line by line:
@@ -173,19 +173,20 @@ export function buildOrderFinancials(input: OrderFinancialsInput): OrderFinancia
 }
 
 // Worked example for the admin "what would this look like" preview: one line of
-// `quantity` units at `sellingPrice`. Under MARKUP the vendor is settled
-// sellingPrice / (1 + markupPercent / 100) and the platform keeps the rest.
+// `quantity` units at the seller's base `sellingPrice`. Under MARKUP the fixed
+// amount is added to each customer unit price and the seller receives base.
 export function previewFinancials(params: {
   sellingPrice: number;
   quantity: number;
   config: PricingConfig;
-  markupPercent?: number;
+  markupAmount?: number;
   deliveryFee?: number;
   paymentMethod?: string;
 }) {
   const { sellingPrice, quantity, config } = params;
-  const markupPercent = effectiveMarkupPercent(config, { markupPercent: params.markupPercent });
-  const customerAmount = round2(sellingPrice * quantity);
+  const markupAmount = effectiveMarkupAmount(config, { markupAmount: params.markupAmount });
+  const customerAmount = round2(customerPriceOf(sellingPrice, markupAmount) * quantity);
+  const vendorAmount = round2(sellingPrice * quantity);
   const deliveryFee = params.deliveryFee ?? 0;
   const paymentMethod = params.paymentMethod ?? PAYMENT_METHODS.COD;
   const commission =
@@ -196,7 +197,7 @@ export function previewFinancials(params: {
   const { order } = buildOrderFinancials({
     config,
     commission,
-    lines: [{ customerAmount, vendorAmount: vendorShareOf(customerAmount, markupPercent) }],
+    lines: [{ customerAmount, vendorAmount }],
     deliveryFee,
     platformFee: 0,
     couponDiscount: 0,
@@ -205,11 +206,8 @@ export function previewFinancials(params: {
   });
   return {
     sellingPrice,
-    markupPercent,
-    // the platform's markup profit per unit (0 unless MARKUP)
-    markupPerUnit: isMarkupModel(config) ? round2(sellingPrice - vendorShareOf(sellingPrice, markupPercent)) : 0,
+    markupAmountPerUnit: markupAmount,
     quantity,
     ...order,
   };
 }
-

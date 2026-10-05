@@ -2,6 +2,7 @@ import { Vendor } from '../models/Vendor';
 import { Store } from '../models/Store';
 import { VendorFoodItem } from '../models/VendorFoodItem';
 import { InstamartProduct } from '../models/InstamartProduct';
+import { InstamartVariant } from '../models/InstamartVariant';
 import { ApiError } from '../utils/ApiError';
 import { JwtPayload } from '../utils/jwt';
 import { assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
@@ -17,19 +18,13 @@ import { PRICING_MODELS } from '../constants/enums';
 //     `commissionPercent` of each sale and settles the rest to the seller.
 //     Unchanged; configured on the profile, never per product.
 //
-//   MARKUP — the platform's earning is a per-PRODUCT markup %, set by an admin
-//     and invisible to customers and sellers. The Selling Price is the
-//     customer's price, and the markup is the platform's share of it:
-//         vendor payable per unit = sellingPrice / (1 + markupPercent / 100)
-//         markupAmount (admin profit per unit) = sellingPrice − vendor payable
-//     e.g. selling ₹30 at 20% → the vendor is settled ₹25 and the platform
-//     keeps ₹5. Two products of the same seller can carry different markups.
+//   MARKUP — the platform's earning is a fixed per-product amount set by an
+//     admin. The stored Selling Price is the seller's base price; customers pay
+//     base price + markup amount, and the seller is settled their base price.
 //
-// A product's markup % also covers its variants and add-ons (they are part of
-// the same item). Customers always see exactly the stored selling prices —
-// nothing about the markup is added to or hidden in what they are shown; it is
-// only ever used to split a sale between the seller and the platform (see
-// orderFinancials.service.ts).
+// A product's fixed markup amount also applies to its variants. Customers see
+// base price + markup; the amount is snapshotted separately for platform
+// earnings (see orderFinancials.service.ts).
 
 export interface PricingConfig {
   pricingModel: string;
@@ -59,25 +54,36 @@ export function isMarkupModel(config: PricingConfig): boolean {
 }
 
 interface MarkupProduct {
-  markupPercent?: number | null;
+  markupAmount?: number | null;
 }
 
-// The markup % in effect for a product: its own under MARKUP, none otherwise.
-export function effectiveMarkupPercent(config: PricingConfig, product?: MarkupProduct): number {
+export function effectiveMarkupAmount(config: PricingConfig, product?: MarkupProduct): number {
   if (!isMarkupModel(config)) return 0;
-  const percent = product?.markupPercent;
-  return typeof percent === 'number' && percent > 0 ? percent : 0;
+  const amount = product?.markupAmount;
+  return typeof amount === 'number' && amount > 0 ? round2(amount) : 0;
 }
 
-// What the seller is settled out of a customer amount at `percent` markup — the
-// one formula for the markup split.
-export function vendorShareOf(customerAmount: number, percent: number): number {
-  return percent > 0 ? round2(customerAmount / (1 + percent / 100)) : round2(customerAmount);
+export function baseProductPrice(
+  product: { pricingSchemaVersion?: number; markupAmount?: number | null },
+  storedPrice: number,
+): number {
+  // Version 2 stored customer prices with the markup already included.
+  if (product.pricingSchemaVersion === 2 && typeof product.markupAmount === 'number') {
+    return round2(Math.max(0, storedPrice - product.markupAmount));
+  }
+  return round2(storedPrice);
 }
 
-// The platform's markup profit within a customer amount at `percent` markup.
-export function markupProfitOf(customerAmount: number, percent: number): number {
-  return round2(round2(customerAmount) - vendorShareOf(customerAmount, percent));
+export function customerPriceOf(basePrice: number, markupAmount: number): number {
+  return round2(basePrice + markupAmount);
+}
+
+export function vendorShareOf(customerAmount: number, markupAmount: number): number {
+  return round2(Math.max(0, customerAmount - markupAmount));
+}
+
+export function markupProfitOf(_basePrice: number, markupAmount: number): number {
+  return round2(Math.max(0, markupAmount));
 }
 
 export async function loadPricingConfigs(owner: 'VENDOR' | 'STORE', ids: string[]): Promise<Map<string, PricingConfig>> {
@@ -96,7 +102,9 @@ export async function loadPricingConfig(owner: 'VENDOR' | 'STORE', id: string): 
 // What a create/update asks for.
 export interface PricingRequest {
   sellingPrice?: number;
-  // Admin-only, MARKUP sellers only.
+  // Admin-only fixed per-unit amount for MARKUP sellers.
+  markupAmount?: number;
+  // Temporary compatibility for older admin clients.
   markupPercent?: number;
 }
 
@@ -114,19 +122,21 @@ export function pricingRequestFromInput(data: Record<string, unknown>, legacyKey
   take('vendorOriginalPrice');
   const platformSellingPrice = take('platformSellingPrice');
   const legacy = take(legacyKey);
-  return { sellingPrice: platformSellingPrice ?? legacy, markupPercent: take('markupPercent') };
+  return {
+    sellingPrice: platformSellingPrice ?? legacy,
+    markupAmount: take('markupAmount'),
+    markupPercent: take('markupPercent'),
+  };
 }
 
 export function hasPricingRequest(request: PricingRequest): boolean {
-  return request.sellingPrice !== undefined || request.markupPercent !== undefined;
+  return request.sellingPrice !== undefined || request.markupAmount !== undefined || request.markupPercent !== undefined;
 }
 
 // Applies a create/update to a product's stored pricing — the one place the
-// price fields are written, so they cannot drift apart. The Selling Price is
-// required (on create) and may never exceed the printed MRP. A product's
-// markup % is admin-only and only exists on a MARKUP seller's product; the
-// markup amount (the platform's profit per unit) follows from it. Under
-// COMMISSION nothing about markup is stored.
+// price fields are written, so they cannot drift apart. The seller's base
+// Selling Price is required (on create) and may never exceed the printed MRP.
+// A product's fixed markup amount is admin-only and only applies to MARKUP.
 // `field` is the product's price field: 'price' (Food) or 'sellingPrice' (Instamart).
 export function applyProductPricing(
   product: object,
@@ -139,45 +149,97 @@ export function applyProductPricing(
   const doc = product as Record<string, number | undefined>;
   const markup = isMarkupModel(config);
 
-  if (request.markupPercent !== undefined) {
+  if (request.markupAmount !== undefined || request.markupPercent !== undefined) {
     if (user.userType !== 'ADMIN') throw ApiError.forbidden('Only the platform can set a product markup', 'MARKUP_ADMIN_ONLY');
     if (!markup) throw ApiError.badRequest('A product markup can only be set for a seller on the MARKUP pricing model', 'NOT_A_MARKUP_SELLER');
   }
 
-  const sellingPrice = request.sellingPrice ?? doc[field];
+  const storedPrice = doc[field];
+  const previousBasePrice =
+    storedPrice === undefined
+      ? undefined
+      : baseProductPrice(
+          { pricingSchemaVersion: doc.pricingSchemaVersion, markupAmount: doc.markupAmount },
+          storedPrice,
+        );
+  let sellingPrice = request.sellingPrice ?? previousBasePrice;
   if (sellingPrice === undefined) throw ApiError.badRequest('Selling price is required', 'SELLING_PRICE_REQUIRED');
 
   if (typeof mrp === 'number' && mrp > 0 && sellingPrice > mrp + 0.005) {
     throw ApiError.unprocessable('Selling price cannot be greater than MRP.', 'SELLING_PRICE_ABOVE_MRP', { sellingPrice, mrp });
   }
 
-  const markupPercent = request.markupPercent ?? doc.markupPercent ?? 0;
+  let markupAmount = request.markupAmount ?? doc.markupAmount ?? 0;
+  if (request.markupPercent !== undefined) {
+    const legacyCustomerPrice = request.sellingPrice ?? storedPrice ?? sellingPrice;
+    const legacyBasePrice = round2(legacyCustomerPrice / (1 + request.markupPercent / 100));
+    markupAmount = round2(legacyCustomerPrice - legacyBasePrice);
+    sellingPrice = legacyBasePrice;
+  }
   doc[field] = sellingPrice;
-  doc.markupPercent = markupPercent;
-  doc.markupAmount = markup ? markupProfitOf(sellingPrice, markupPercent) : 0;
+  doc.markupPercent = 0;
+  doc.markupAmount = markup ? round2(markupAmount) : 0;
+  doc.pricingSchemaVersion = 3;
 }
 
-// Brings every product of a seller's stored markup amount back in line with its
-// pricing model — called when the model changes (selling prices never change).
-// A product keeps its markupPercent while the seller is on COMMISSION so
-// switching back restores it, but its markup amount is 0.
+// Clear inactive markup amounts when switching to COMMISSION. Legacy version-2
+// prices include that markup, so normalize product and variant prices first.
 export async function syncSellerProductPrices(owner: 'VENDOR' | 'STORE', sellerId: string): Promise<void> {
   const config = await loadPricingConfig(owner, sellerId);
   const markup = isMarkupModel(config);
   const isFood = owner === 'VENDOR';
-  const field = isFood ? 'price' : 'sellingPrice';
-  const products = isFood
-    ? await VendorFoodItem.find({ vendorId: sellerId }).select('price markupPercent')
-    : await InstamartProduct.find({ storeId: sellerId }).select('sellingPrice markupPercent');
-  if (products.length === 0) return;
+  if (markup) return;
+  if (isFood) {
+    const products = await VendorFoodItem.find({ vendorId: sellerId }).select('price markupAmount pricingSchemaVersion');
+    const ops = products.map((product) => ({
+      updateOne: {
+        filter: { _id: product._id },
+        update: {
+          $set: {
+            markupAmount: 0,
+            ...(product.pricingSchemaVersion === 2
+              ? { price: baseProductPrice(product, product.price), pricingSchemaVersion: 3 }
+              : {}),
+          },
+        },
+      },
+    }));
+    if (ops.length) await VendorFoodItem.bulkWrite(ops);
+    return;
+  }
 
-  const ops = products.map((product) => {
-    const doc = product as unknown as Record<string, number | undefined>;
-    const markupAmount = markup ? markupProfitOf(doc[field] as number, doc.markupPercent ?? 0) : 0;
-    return { updateOne: { filter: { _id: product._id }, update: { $set: { markupAmount } } } };
-  });
-  if (isFood) await VendorFoodItem.bulkWrite(ops);
-  else await InstamartProduct.bulkWrite(ops);
+  const products = await InstamartProduct.find({ storeId: sellerId }).select('sellingPrice markupAmount pricingSchemaVersion');
+  const legacyProducts = products.filter((product) => product.pricingSchemaVersion === 2);
+  if (legacyProducts.length) {
+    const legacyById = new Map(legacyProducts.map((product) => [product.id, product]));
+    const variants = await InstamartVariant.find({ productId: { $in: legacyProducts.map((product) => product._id) } }).select('productId sellingPrice');
+    const variantOps = variants.map((variant) => {
+      const product = legacyById.get(variant.productId.toString());
+      if (!product) throw new Error(`Missing Instamart product ${variant.productId} while normalizing legacy variant pricing`);
+      return {
+        updateOne: {
+          filter: { _id: variant._id },
+          update: { $set: { sellingPrice: baseProductPrice(product, variant.sellingPrice) } },
+        },
+      };
+    });
+    if (variantOps.length) await InstamartVariant.bulkWrite(variantOps);
+  }
+
+  const ops = products.map((product) => ({
+    updateOne: {
+      filter: { _id: product._id },
+      update: {
+        $set: {
+          markupAmount: 0,
+          ...(product.pricingSchemaVersion === 2
+            ? { sellingPrice: baseProductPrice(product, product.sellingPrice), pricingSchemaVersion: 3 }
+            : {}),
+        },
+      },
+    },
+  }));
+  if (ops.length) await InstamartProduct.bulkWrite(ops);
 }
 
 // --- Who sees which product fields ----------------------------------------------
@@ -188,8 +250,19 @@ const INTERNAL_PRODUCT_FIELDS = ['markupPercent', 'markupAmount', 'vendorOrigina
 const CUSTOMER_HIDDEN_PRODUCT_FIELDS = ['costPrice', 'minVariantPrice'] as const;
 
 export function productForViewer<T extends Record<string, unknown>>(plain: T, userType: string): T {
-  if (userType === 'ADMIN') return plain;
   const out: Record<string, unknown> = { ...plain };
+  const priceField = typeof out.price === 'number' ? 'price' : typeof out.sellingPrice === 'number' ? 'sellingPrice' : undefined;
+  if (priceField) {
+    const basePrice = baseProductPrice(
+      {
+        pricingSchemaVersion: out.pricingSchemaVersion as number | undefined,
+        markupAmount: out.markupAmount as number | undefined,
+      },
+      out[priceField] as number,
+    );
+    out[priceField] = userType === 'CUSTOMER' ? customerPriceOf(basePrice, Number(out.markupAmount ?? 0)) : basePrice;
+  }
+  if (userType === 'ADMIN') return out as T;
   for (const field of INTERNAL_PRODUCT_FIELDS) delete out[field];
   if (userType === 'CUSTOMER') for (const field of CUSTOMER_HIDDEN_PRODUCT_FIELDS) delete out[field];
   return out as T;
