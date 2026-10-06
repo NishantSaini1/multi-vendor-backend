@@ -52,6 +52,10 @@ export interface OrderFinancialsInput {
   // What the customer is charged in all (the "final customer payable").
   orderTotal: number;
   paymentMethod: string;
+  // The delivery partner's per-delivery vehicle allowance (distance × perKmRate).
+  // Platform keeps 100% of deliveryFee as revenue; this is a platform expense.
+  // Defaults to 0 at order creation (partner not yet assigned); updated at assignment.
+  deliveryPartnerCost?: number;
 }
 
 export interface OrderFinancials {
@@ -134,7 +138,10 @@ export function buildOrderFinancials(input: OrderFinancialsInput): OrderFinancia
   const platformRevenue = round2(commissionAmount + markupAmount);
 
   const deliveryRevenue = round2(input.deliveryFee);
-  const deliveryPartnerPayout = round2(input.deliveryFee * (1 - env.PLATFORM_DELIVERY_MARGIN_PERCENT / 100));
+  // Platform keeps 100% of the delivery fee as revenue. The partner's vehicle
+  // allowance (distance × perKmRate from DeliveryPartnerSalaryConfig) is a
+  // platform expense, set to 0 here and updated at partner-assignment time.
+  const deliveryPartnerPayout = round2(input.deliveryPartnerCost ?? 0);
   const paymentGatewayFee = paymentGatewayFeeFor(input.paymentMethod, input.orderTotal);
   // A coupon's value comes off what the customer pays but not off what the
   // seller is settled, so the platform absorbs it.

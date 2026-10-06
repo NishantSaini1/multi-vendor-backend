@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { Delivery, IDelivery } from '../models/Delivery';
 import { DeliveryStatusHistory } from '../models/DeliveryStatusHistory';
 import { DeliveryPartner } from '../models/DeliveryPartner';
+import { DeliveryPartnerSalaryConfig } from '../models/DeliveryPartnerSalaryConfig';
 import { Order } from '../models/Order';
 import { OrderStatusHistory } from '../models/OrderStatusHistory';
 import { Vendor } from '../models/Vendor';
@@ -31,6 +32,7 @@ import { TRANSACTION_TYPE, TRANSACTION_DIRECTION } from '../constants/enums';
 import { PAYMENT_METHODS, PAYMENT_STATUS } from '../constants/paymentStatus';
 import { Payment } from '../models/Payment';
 import { env } from '../config/env';
+import { round2 } from './pricing.service';
 import { generateOtp, hashOtp, verifyOtpHash } from '../utils/otp';
 import { uploadImageBuffer } from './upload.service';
 
@@ -123,6 +125,14 @@ async function performAssignment(
     order.deliveryAddress.longitude,
   );
 
+  // Resolve the vehicle allowance from salary config. Read before the
+  // transaction — it's a rarely-changing admin-managed document.
+  const salaryConfig = await DeliveryPartnerSalaryConfig.findOne({ deliveryPartnerId: partner._id });
+  const vehicleAllowance =
+    salaryConfig?.hasOwnVehicle && (salaryConfig?.perKmRate ?? 0) > 0
+      ? round2(distanceKm * salaryConfig.perKmRate)
+      : 0;
+
   const session = await mongoose.startSession();
   let assigned: InstanceType<typeof Delivery> | undefined;
   let claimedOrder: InstanceType<typeof Order> | null = null;
@@ -146,11 +156,11 @@ async function performAssignment(
         throw ApiError.unprocessable('Delivery partner is not available', 'DELIVERY_PARTNER_NOT_AVAILABLE');
       }
 
-      // Snapshotted now, at assignment — the delivery partner's earning is
-      // fixed at this point rather than recomputed later against whatever
-      // the platform's margin config happens to be at DELIVERED time.
+      // Snapshotted now, at assignment — the partner's vehicle allowance is
+      // locked in here (distance × perKmRate from their salary config) so
+      // later config changes don't affect an in-flight delivery.
       const deliveryFee = order.deliveryFee;
-      const partnerEarning = deliveryFee * (1 - env.PLATFORM_DELIVERY_MARGIN_PERCENT / 100);
+      const partnerEarning = vehicleAllowance;
       const fields = {
         deliveryPartnerId: partner._id,
         pickupLocation: pickup,
@@ -203,6 +213,17 @@ async function performAssignment(
       );
 
       claimedOrder.deliveryId = delivery._id;
+      // Update order P&L snapshot: platform now knows the actual vehicle
+      // allowance (set to 0 at order-creation when no partner was assigned).
+      const paymentGatewayFee = claimedOrder.paymentGatewayFee ?? 0;
+      const couponExpense = claimedOrder.couponExpense ?? 0;
+      const newPlatformExpenses = round2(vehicleAllowance + paymentGatewayFee + couponExpense);
+      const newPlatformNetProfit = round2(
+        (claimedOrder.platformRevenue ?? 0) + (claimedOrder.deliveryRevenue ?? 0) + (claimedOrder.platformFee ?? 0) - newPlatformExpenses,
+      );
+      claimedOrder.deliveryPartnerPayout = vehicleAllowance;
+      claimedOrder.platformExpenses = newPlatformExpenses;
+      claimedOrder.platformNetProfit = newPlatformNetProfit;
       await claimedOrder.save({ session });
       await OrderStatusHistory.create(
         [
