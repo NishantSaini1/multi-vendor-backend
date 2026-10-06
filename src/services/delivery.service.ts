@@ -118,20 +118,28 @@ async function performAssignment(
   actor: AssignmentActor,
 ) {
   const pickup = await resolvePickupPoint(order);
-  const distanceKm = haversineDistanceKm(
+  // Delivery distance: vendor/store → customer (used for ETA and display).
+  const deliveryDistanceKm = round2(haversineDistanceKm(
     pickup.latitude,
     pickup.longitude,
     order.deliveryAddress.latitude,
     order.deliveryAddress.longitude,
+  ));
+  // Pickup distance: partner's current location → vendor/store. Partners
+  // without a last-known location fall back to 0 (platform-vehicle partner
+  // or partner that never reported GPS) — the admin can correct it manually.
+  const pickupDistanceKm = round2(
+    partner.currentLatitude != null && partner.currentLongitude != null
+      ? haversineDistanceKm(partner.currentLatitude, partner.currentLongitude, pickup.latitude, pickup.longitude)
+      : 0,
   );
+  const totalPayableDistanceKm = round2(pickupDistanceKm + deliveryDistanceKm);
 
   // Resolve the vehicle allowance from salary config. Read before the
   // transaction — it's a rarely-changing admin-managed document.
   const salaryConfig = await DeliveryPartnerSalaryConfig.findOne({ deliveryPartnerId: partner._id });
-  const vehicleAllowance =
-    salaryConfig?.hasOwnVehicle && (salaryConfig?.perKmRate ?? 0) > 0
-      ? round2(distanceKm * salaryConfig.perKmRate)
-      : 0;
+  const perKmRate = salaryConfig?.hasOwnVehicle ? (salaryConfig?.perKmRate ?? 0) : 0;
+  const vehicleAllowance = perKmRate > 0 ? round2(totalPayableDistanceKm * perKmRate) : 0;
 
   const session = await mongoose.startSession();
   let assigned: InstanceType<typeof Delivery> | undefined;
@@ -171,7 +179,11 @@ async function performAssignment(
         },
         status: DELIVERY_STATUS.ASSIGNED,
         assignedAt: new Date(),
-        distance: distanceKm,
+        distance: deliveryDistanceKm,
+        pickupDistanceKm,
+        deliveryDistanceKm,
+        totalPayableDistanceKm,
+        perKmRateSnapshot: perKmRate,
         deliveryFee,
         partnerEarning,
         assignmentMode: mode,
@@ -213,8 +225,9 @@ async function performAssignment(
       );
 
       claimedOrder.deliveryId = delivery._id;
-      // Update order P&L snapshot: platform now knows the actual vehicle
-      // allowance (set to 0 at order-creation when no partner was assigned).
+      // Update order P&L and distance snapshot: platform now knows the actual
+      // vehicle allowance and the full trip distance (set to 0 at order-creation
+      // when no partner was assigned).
       const paymentGatewayFee = claimedOrder.paymentGatewayFee ?? 0;
       const couponExpense = claimedOrder.couponExpense ?? 0;
       const newPlatformExpenses = round2(vehicleAllowance + paymentGatewayFee + couponExpense);
@@ -224,6 +237,10 @@ async function performAssignment(
       claimedOrder.deliveryPartnerPayout = vehicleAllowance;
       claimedOrder.platformExpenses = newPlatformExpenses;
       claimedOrder.platformNetProfit = newPlatformNetProfit;
+      claimedOrder.pickupDistanceKm = pickupDistanceKm;
+      claimedOrder.deliveryDistanceKm = deliveryDistanceKm;
+      claimedOrder.totalPayableDistanceKm = totalPayableDistanceKm;
+      claimedOrder.perKmRateSnapshot = perKmRate;
       await claimedOrder.save({ session });
       await OrderStatusHistory.create(
         [

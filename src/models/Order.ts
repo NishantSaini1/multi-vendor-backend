@@ -67,6 +67,15 @@ export interface IOrder extends Document {
   platformRevenue?: number;
   deliveryRevenue?: number;
   deliveryPartnerPayout?: number;
+  // Distance snapshot set at partner-assignment time (km, rounded to 2dp):
+  //   pickupDistanceKm      — partner's location → vendor/store
+  //   deliveryDistanceKm    — vendor/store → customer
+  //   totalPayableDistanceKm — sum; used to compute the vehicle allowance
+  //   perKmRateSnapshot     — rate locked in at assignment (₹/km)
+  pickupDistanceKm?: number;
+  deliveryDistanceKm?: number;
+  totalPayableDistanceKm?: number;
+  perKmRateSnapshot?: number;
   paymentGatewayFee?: number;
   couponExpense?: number;
   platformExpenses?: number;
@@ -132,6 +141,10 @@ const orderSchema = new Schema<IOrder>(
     platformRevenue: { type: Number },
     deliveryRevenue: { type: Number, min: 0 },
     deliveryPartnerPayout: { type: Number, min: 0 },
+    pickupDistanceKm: { type: Number, min: 0 },
+    deliveryDistanceKm: { type: Number, min: 0 },
+    totalPayableDistanceKm: { type: Number, min: 0 },
+    perKmRateSnapshot: { type: Number, min: 0 },
     paymentGatewayFee: { type: Number, min: 0 },
     couponExpense: { type: Number, min: 0 },
     platformExpenses: { type: Number },

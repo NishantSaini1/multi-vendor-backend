@@ -41,10 +41,18 @@ export interface IDelivery extends Document {
   customerOtpHash?: string;
   customerOtpVerified?: boolean;
   estimatedTime?: number;
+  // Distance components (all in km), snapshotted at assignment time:
+  //   pickupDistanceKm  — delivery partner's location → vendor/store (pickup point)
+  //   deliveryDistanceKm — vendor/store → customer (drop point), alias: distance
+  //   totalPayableDistanceKm — sum used to compute the vehicle allowance
+  //   perKmRateSnapshot — per-km rate at the time of assignment (historical)
   distance?: number;
-  // Snapshotted at assignment time (assignDeliveryPartner) from the order's
-  // own deliveryFee — see delivery.service.ts. partnerEarning is deliveryFee
-  // net of the platform's delivery margin (env.PLATFORM_DELIVERY_MARGIN_PERCENT).
+  pickupDistanceKm?: number;
+  deliveryDistanceKm?: number;
+  totalPayableDistanceKm?: number;
+  perKmRateSnapshot?: number;
+  // Snapshotted at assignment time from the order's own deliveryFee.
+  // partnerEarning = vehicleAllowance = totalPayableDistanceKm × perKmRate.
   deliveryFee?: number;
   partnerEarning?: number;
   // How the current partner got this delivery: AUTO (nearest-partner
@@ -98,6 +106,10 @@ const deliverySchema = new Schema<IDelivery>(
     customerOtpVerified: { type: Boolean, default: false },
     estimatedTime: { type: Number },
     distance: { type: Number },
+    pickupDistanceKm: { type: Number, min: 0 },
+    deliveryDistanceKm: { type: Number, min: 0 },
+    totalPayableDistanceKm: { type: Number, min: 0 },
+    perKmRateSnapshot: { type: Number, min: 0 },
     deliveryFee: { type: Number, min: 0 },
     partnerEarning: { type: Number, min: 0 },
     assignmentMode: { type: String, enum: Object.values(DELIVERY_ASSIGNMENT_MODE), default: DELIVERY_ASSIGNMENT_MODE.MANUAL },
