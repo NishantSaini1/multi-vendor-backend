@@ -227,7 +227,16 @@ export const TRANSACTION_TYPE = {
   REFUND: 'REFUND',
   VENDOR_SETTLEMENT: 'VENDOR_SETTLEMENT',
   DELIVERY_SETTLEMENT: 'DELIVERY_SETTLEMENT',
+  // Monthly salary + vehicle-allowance payout to a delivery partner (recorded
+  // when admin marks a DeliveryPartnerSalaryRecord as PAID).
+  DELIVERY_SALARY_PAYOUT: 'DELIVERY_SALARY_PAYOUT',
   ADJUSTMENT: 'ADJUSTMENT',
+} as const;
+
+// Status lifecycle for a DeliveryPartnerSalaryRecord (monthly salary slip).
+export const SALARY_RECORD_STATUS = {
+  PENDING: 'PENDING',
+  PAID: 'PAID',
 } as const;
 
 export const TRANSACTION_DIRECTION = {
