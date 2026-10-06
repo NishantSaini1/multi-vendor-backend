@@ -15,6 +15,7 @@ import {
   baseProductPrice,
   childItemForViewer,
   customerPriceOf,
+  effectiveMarkupAmount,
   hasPricingRequest,
   isMarkupModel,
   loadPricingConfig,
@@ -70,22 +71,16 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
   // than the raw seller base price.
   const stats = await InstamartVariant.aggregate([
     { $match: { productId: { $in: ids }, status: GENERIC_STATUS.ACTIVE } },
-    { $addFields: {
-      markupAmountSafe: { $ifNull: ['$markupAmount', 0] },
-      customerPrice: { $add: ['$sellingPrice', { $ifNull: ['$markupAmount', 0] }] },
-    } },
-    { $sort: { isDefault: -1, customerPrice: 1 } },
+    { $sort: { isDefault: -1, sellingPrice: 1 } },
     {
       $group: {
         _id: '$productId',
         isDefault: { $first: '$isDefault' },
         variantSellingPrice: { $first: '$sellingPrice' },
-        variantMarkupAmount: { $first: '$markupAmountSafe' },
-        variantCustomerPrice: { $first: '$customerPrice' },
         variantMrpFrom: { $first: '$mrp' },
         variantIdFrom: { $first: '$_id' },
         variantNameFrom: { $first: '$name' },
-        minVariantCustomerPrice: { $min: '$customerPrice' },
+        minVariantSellingPrice: { $min: '$sellingPrice' },
         count: { $sum: 1 },
       },
     },
@@ -102,6 +97,19 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
     );
     const parentMarkupAmount = Number(plain.markupAmount ?? 0);
     const parentCustomerPrice = customerPriceOf(basePrice, parentMarkupAmount);
+    const variantCustomerPrice = (variantPrice: number) =>
+      customerPriceOf(
+        baseProductPrice(
+          {
+            pricingSchemaVersion: plain.pricingSchemaVersion as number | undefined,
+            markupAmount: plain.markupAmount as number | undefined,
+          },
+          variantPrice,
+        ),
+        parentMarkupAmount,
+      );
+    const fromVariantPrice = stat ? variantCustomerPrice(stat.variantSellingPrice) : null;
+    const minVariantPrice = stat ? variantCustomerPrice(stat.minVariantSellingPrice) : null;
     const baseMrp = plain.mrp as number;
     // Pick the variant to display as "from" price (default variant wins, else
     // cheapest by customer price). If the default/cheapest variant is not cheaper
@@ -110,8 +118,8 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
     let mrpFrom = baseMrp;
     let variantIdFrom: string | null = null;
     let variantNameFrom: string | null = null;
-    if (stat && (stat.isDefault || stat.variantCustomerPrice < parentCustomerPrice)) {
-      priceFrom = stat.variantCustomerPrice;
+    if (stat && fromVariantPrice !== null && (stat.isDefault || fromVariantPrice < parentCustomerPrice)) {
+      priceFrom = fromVariantPrice;
       mrpFrom = stat.variantMrpFrom;
       variantIdFrom = stat.variantIdFrom.toString();
       variantNameFrom = stat.variantNameFrom;
@@ -124,9 +132,9 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
       variantIdFrom,
       variantNameFrom,
       // cheapest of the base pack and all active variant customer prices
-      minPackPrice: stat ? Math.min(parentCustomerPrice, stat.minVariantCustomerPrice) : parentCustomerPrice,
+      minPackPrice: minVariantPrice !== null ? Math.min(parentCustomerPrice, minVariantPrice) : parentCustomerPrice,
       // cheapest variant customer price (null = no variants)
-      minVariantPrice: stat ? stat.minVariantCustomerPrice : null,
+      minVariantPrice,
       variantCount: stat ? stat.count + 1 : 1,
     };
   });
@@ -437,6 +445,17 @@ export async function listInstamartVariants(productId: string, user: JwtPayload)
   const product = await findProductOrThrow(productId);
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
   const variants = await InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
+  if (user.userType === 'CUSTOMER') {
+    // Same price order creation charges: the variant's base price plus the
+    // product's fixed markup (a variant has no markup of its own for customers).
+    const markup = effectiveMarkupAmount(await loadPricingConfig('STORE', product.storeId.toString()), product);
+    return variants.map((v) => {
+      const plain = v.toJSON() as Record<string, unknown>;
+      delete plain.markupAmount;
+      plain.sellingPrice = customerPriceOf(baseProductPrice(product, Number(plain.sellingPrice ?? 0)), markup);
+      return plain;
+    });
+  }
   return variants.map((v) => childItemForViewer(v.toJSON() as Record<string, unknown>, 'sellingPrice', user.userType));
 }
 
