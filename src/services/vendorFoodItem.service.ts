@@ -10,7 +10,7 @@ import { assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
 import { findFoodProductOrThrow } from './foodProduct.service';
 import { assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
-import { applyProductPricing, hasPricingRequest, pricingRequestFromInput, productForViewer, toPricingConfig } from './pricing.service';
+import { applyProductPricing, childItemForViewer, hasPricingRequest, isMarkupModel, pricingRequestFromInput, productForViewer, round2, toPricingConfig } from './pricing.service';
 
 async function assertVendorAccess(vendorId: string, user: JwtPayload) {
   const vendor = await Vendor.findById(vendorId);
@@ -164,13 +164,26 @@ export async function updateVendorFoodItemAvailability(
 export async function listFoodVariants(vendorId: string, itemId: string, user: JwtPayload) {
   await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
-  return FoodVariant.find({ vendorFoodItemId: itemId }).sort({ isDefault: -1, name: 1 });
+  const variants = await FoodVariant.find({ vendorFoodItemId: itemId }).sort({ isDefault: -1, name: 1 });
+  return variants.map((v) => childItemForViewer(v.toJSON() as Record<string, unknown>, 'price', user.userType));
+}
+
+function extractMarkupAmount(data: Record<string, unknown>, vendor: { pricingModel?: string; commissionPercent?: number }, user: JwtPayload): number {
+  const markupAmount = typeof data.markupAmount === 'number' ? data.markupAmount : undefined;
+  delete data.markupAmount;
+  if (markupAmount === undefined) return 0;
+  if (user.userType !== 'ADMIN') throw ApiError.forbidden('Only the platform can set a markup on variants or add-ons', 'MARKUP_ADMIN_ONLY');
+  if (!isMarkupModel(toPricingConfig(vendor))) throw ApiError.badRequest('A markup can only be set for a seller on the MARKUP pricing model', 'NOT_A_MARKUP_SELLER');
+  if (markupAmount < 0) throw ApiError.badRequest('Markup amount must be non-negative', 'INVALID_MARKUP_AMOUNT');
+  return round2(markupAmount);
 }
 
 export async function createFoodVariant(vendorId: string, itemId: string, data: Record<string, unknown>, user: JwtPayload) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
-  return FoodVariant.create({ ...data, vendorFoodItemId: itemId });
+  const markupAmount = extractMarkupAmount(data, vendor, user);
+  const variant = await FoodVariant.create({ ...data, vendorFoodItemId: itemId, markupAmount });
+  return childItemForViewer(variant.toJSON() as Record<string, unknown>, 'price', user.userType);
 }
 
 export async function updateFoodVariant(
@@ -180,12 +193,17 @@ export async function updateFoodVariant(
   data: Record<string, unknown>,
   user: JwtPayload,
 ) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
 
-  const variant = await FoodVariant.findOneAndUpdate({ _id: variantId, vendorFoodItemId: itemId }, data, { new: true });
+  const hasMarkup = typeof data.markupAmount === 'number';
+  const markupAmount = extractMarkupAmount(data, vendor, user);
+  const update: Record<string, unknown> = { ...data };
+  if (hasMarkup) update.markupAmount = markupAmount;
+
+  const variant = await FoodVariant.findOneAndUpdate({ _id: variantId, vendorFoodItemId: itemId }, update, { new: true });
   if (!variant) throw ApiError.notFound('Food variant not found', 'FOOD_VARIANT_NOT_FOUND');
-  return variant;
+  return childItemForViewer(variant.toJSON() as Record<string, unknown>, 'price', user.userType);
 }
 
 export async function deleteFoodVariant(vendorId: string, itemId: string, variantId: string, user: JwtPayload) {
@@ -248,7 +266,8 @@ export async function listModifierOptions(vendorId: string, itemId: string, grou
   await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
   await findModifierGroupOrThrow(itemId, groupId);
-  return ModifierOption.find({ modifierGroupId: groupId }).sort({ createdAt: 1 });
+  const options = await ModifierOption.find({ modifierGroupId: groupId }).sort({ createdAt: 1 });
+  return options.map((o) => childItemForViewer(o.toJSON() as Record<string, unknown>, 'price', user.userType));
 }
 
 export async function createModifierOption(
@@ -258,10 +277,12 @@ export async function createModifierOption(
   data: Record<string, unknown>,
   user: JwtPayload,
 ) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
   await findModifierGroupOrThrow(itemId, groupId);
-  return ModifierOption.create({ ...data, modifierGroupId: groupId });
+  const markupAmount = extractMarkupAmount(data, vendor, user);
+  const option = await ModifierOption.create({ ...data, modifierGroupId: groupId, markupAmount });
+  return childItemForViewer(option.toJSON() as Record<string, unknown>, 'price', user.userType);
 }
 
 export async function updateModifierOption(
@@ -272,13 +293,18 @@ export async function updateModifierOption(
   data: Record<string, unknown>,
   user: JwtPayload,
 ) {
-  await assertVendorAccess(vendorId, user);
+  const vendor = await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
   await findModifierGroupOrThrow(itemId, groupId);
 
-  const option = await ModifierOption.findOneAndUpdate({ _id: optionId, modifierGroupId: groupId }, data, { new: true });
+  const hasMarkup = typeof data.markupAmount === 'number';
+  const markupAmount = extractMarkupAmount(data, vendor, user);
+  const update: Record<string, unknown> = { ...data };
+  if (hasMarkup) update.markupAmount = markupAmount;
+
+  const option = await ModifierOption.findOneAndUpdate({ _id: optionId, modifierGroupId: groupId }, update, { new: true });
   if (!option) throw ApiError.notFound('Modifier option not found', 'MODIFIER_OPTION_NOT_FOUND');
-  return option;
+  return childItemForViewer(option.toJSON() as Record<string, unknown>, 'price', user.userType);
 }
 
 export async function deleteModifierOption(

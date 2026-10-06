@@ -249,6 +249,22 @@ export async function syncSellerProductPrices(owner: 'VENDOR' | 'STORE', sellerI
 const INTERNAL_PRODUCT_FIELDS = ['markupPercent', 'markupAmount', 'vendorOriginalPrice', 'platformSellingPrice'] as const;
 const CUSTOMER_HIDDEN_PRODUCT_FIELDS = ['costPrice', 'minVariantPrice'] as const;
 
+// Applies viewer-appropriate pricing to a variant or modifier option.
+// Child items always store the seller's base price (no legacy v2 schema applies).
+// Customers see base + markup; vendors/delivery partners see base; admins see both.
+export function childItemForViewer<T extends Record<string, unknown>>(
+  plain: T,
+  priceField: 'price' | 'sellingPrice',
+  userType: string,
+): T {
+  const out: Record<string, unknown> = { ...plain };
+  const basePrice = round2(Number(out[priceField] ?? 0));
+  const markupAmount = round2(Number(out.markupAmount ?? 0));
+  out[priceField] = userType === 'CUSTOMER' ? customerPriceOf(basePrice, markupAmount) : basePrice;
+  if (userType !== 'ADMIN') delete out.markupAmount;
+  return out as T;
+}
+
 export function productForViewer<T extends Record<string, unknown>>(plain: T, userType: string): T {
   const out: Record<string, unknown> = { ...plain };
   const priceField = typeof out.price === 'number' ? 'price' : typeof out.sellingPrice === 'number' ? 'sellingPrice' : undefined;

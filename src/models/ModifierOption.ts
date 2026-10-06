@@ -7,6 +7,7 @@ export interface IModifierOption extends Document {
   modifierGroupId: Types.ObjectId;
   name: string;
   price: number;
+  markupAmount: number;
   status: string;
   createdAt: Date;
   updatedAt: Date;
@@ -17,6 +18,7 @@ const modifierOptionSchema = new Schema<IModifierOption>(
     modifierGroupId: { type: Schema.Types.ObjectId, ref: 'ModifierGroup', required: true, index: true },
     name: { type: String, required: true, trim: true },
     price: { type: Number, default: 0, min: 0 },
+    markupAmount: { type: Number, default: 0, min: 0 },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },
   },
   { timestamps: true },

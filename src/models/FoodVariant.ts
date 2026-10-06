@@ -9,6 +9,7 @@ export interface IFoodVariant extends Document {
   vendorFoodItemId: Types.ObjectId;
   name: string;
   price: number;
+  markupAmount: number;
   isDefault: boolean;
   status: string;
   createdAt: Date;
@@ -20,6 +21,7 @@ const foodVariantSchema = new Schema<IFoodVariant>(
     vendorFoodItemId: { type: Schema.Types.ObjectId, ref: 'VendorFoodItem', required: true, index: true },
     name: { type: String, required: true },
     price: { type: Number, required: true, min: 0 },
+    markupAmount: { type: Number, default: 0, min: 0 },
     isDefault: { type: Boolean, default: false },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },
   },

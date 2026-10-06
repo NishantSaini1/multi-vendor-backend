@@ -6,6 +6,7 @@ export interface IInstamartVariant extends Document {
   name: string;
   mrp: number;
   sellingPrice: number;
+  markupAmount: number;
   isDefault: boolean;
   status: string;
   createdAt: Date;
@@ -18,6 +19,7 @@ const instamartVariantSchema = new Schema<IInstamartVariant>(
     name: { type: String, required: true },
     mrp: { type: Number, required: true, min: 0 },
     sellingPrice: { type: Number, required: true, min: 0 },
+    markupAmount: { type: Number, default: 0, min: 0 },
     isDefault: { type: Boolean, default: false },
     status: { type: String, enum: ['ACTIVE', 'INACTIVE'], default: 'ACTIVE' },
   },

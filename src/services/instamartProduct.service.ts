@@ -13,11 +13,14 @@ import { assertCategoryAndSubcategory } from './instamartGlobalProduct.service';
 import {
   applyProductPricing,
   baseProductPrice,
+  childItemForViewer,
   customerPriceOf,
   hasPricingRequest,
+  isMarkupModel,
   loadPricingConfig,
   pricingRequestFromInput,
   productForViewer,
+  round2,
   toPricingConfig,
 } from './pricing.service';
 
@@ -62,18 +65,27 @@ export function globalProductVisible(globalProduct: Pick<IInstamartGlobalProduct
 async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<Record<string, unknown>[]> {
   if (enriched.length === 0) return enriched;
   const ids = enriched.map((p) => p._id as mongoose.Types.ObjectId);
+  // Compute each variant's customer price (sellingPrice + own markupAmount) before
+  // grouping so that sorting and min/max reflect what customers actually pay rather
+  // than the raw seller base price.
   const stats = await InstamartVariant.aggregate([
     { $match: { productId: { $in: ids }, status: GENERIC_STATUS.ACTIVE } },
-    { $sort: { isDefault: -1, sellingPrice: 1 } },
+    { $addFields: {
+      markupAmountSafe: { $ifNull: ['$markupAmount', 0] },
+      customerPrice: { $add: ['$sellingPrice', { $ifNull: ['$markupAmount', 0] }] },
+    } },
+    { $sort: { isDefault: -1, customerPrice: 1 } },
     {
       $group: {
         _id: '$productId',
         isDefault: { $first: '$isDefault' },
-        variantPriceFrom: { $first: '$sellingPrice' },
+        variantSellingPrice: { $first: '$sellingPrice' },
+        variantMarkupAmount: { $first: '$markupAmountSafe' },
+        variantCustomerPrice: { $first: '$customerPrice' },
         variantMrpFrom: { $first: '$mrp' },
         variantIdFrom: { $first: '$_id' },
         variantNameFrom: { $first: '$name' },
-        minVariantPrice: { $min: '$sellingPrice' },
+        minVariantCustomerPrice: { $min: '$customerPrice' },
         count: { $sum: 1 },
       },
     },
@@ -88,18 +100,18 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
       },
       plain.sellingPrice as number,
     );
+    const parentMarkupAmount = Number(plain.markupAmount ?? 0);
+    const parentCustomerPrice = customerPriceOf(basePrice, parentMarkupAmount);
     const baseMrp = plain.mrp as number;
-    const markupAmount = Number(plain.markupAmount ?? 0);
-    const variantBasePrice = stat ? baseProductPrice(plain, stat.variantPriceFrom) : undefined;
-    const minimumVariantBasePrice = stat ? baseProductPrice(plain, stat.minVariantPrice) : undefined;
-    let priceFrom = basePrice;
+    // Pick the variant to display as "from" price (default variant wins, else
+    // cheapest by customer price). If the default/cheapest variant is not cheaper
+    // than the base pack, show the base pack's price instead.
+    let priceFrom = parentCustomerPrice;
     let mrpFrom = baseMrp;
-    // which pack variantPriceFrom belongs to (null = the base pack), so a
-    // card can label the price with the right pack size
     let variantIdFrom: string | null = null;
     let variantNameFrom: string | null = null;
-    if (stat && (stat.isDefault || (variantBasePrice ?? basePrice) < basePrice)) {
-      priceFrom = variantBasePrice ?? basePrice;
+    if (stat && (stat.isDefault || stat.variantCustomerPrice < parentCustomerPrice)) {
+      priceFrom = stat.variantCustomerPrice;
       mrpFrom = stat.variantMrpFrom;
       variantIdFrom = stat.variantIdFrom.toString();
       variantNameFrom = stat.variantNameFrom;
@@ -107,16 +119,14 @@ async function attachVariantInfo(enriched: Record<string, unknown>[]): Promise<R
     return {
       ...plain,
       hasVariants: !!stat,
-      variantPriceFrom: customerPriceOf(priceFrom, markupAmount),
+      variantPriceFrom: priceFrom,
       variantMrpFrom: mrpFrom,
       variantIdFrom,
       variantNameFrom,
-      // cheapest pack of all (base + ACTIVE variants)
-      minPackPrice: customerPriceOf(stat ? Math.min(basePrice, minimumVariantBasePrice ?? basePrice) : basePrice, markupAmount),
-      // the cheapest variant on its own (raw) — lets the customer transform
-      // price the variants and the base pack separately under MARKUP
-      minVariantPrice: stat && minimumVariantBasePrice !== undefined ? customerPriceOf(minimumVariantBasePrice, markupAmount) : null,
-      // pack sizes to choose from: every ACTIVE variant + the base pack
+      // cheapest of the base pack and all active variant customer prices
+      minPackPrice: stat ? Math.min(parentCustomerPrice, stat.minVariantCustomerPrice) : parentCustomerPrice,
+      // cheapest variant customer price (null = no variants)
+      minVariantPrice: stat ? stat.minVariantCustomerPrice : null,
       variantCount: stat ? stat.count + 1 : 1,
     };
   });
@@ -426,13 +436,27 @@ export async function updateInstamartProductStatus(id: string, status: string, u
 export async function listInstamartVariants(productId: string, user: JwtPayload) {
   const product = await findProductOrThrow(productId);
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
-  return InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
+  const variants = await InstamartVariant.find({ productId }).sort({ isDefault: -1, name: 1 });
+  return variants.map((v) => childItemForViewer(v.toJSON() as Record<string, unknown>, 'sellingPrice', user.userType));
+}
+
+async function extractInstamartVariantMarkup(data: Record<string, unknown>, storeId: string, user: JwtPayload): Promise<number> {
+  const markupAmount = typeof data.markupAmount === 'number' ? data.markupAmount : undefined;
+  delete data.markupAmount;
+  if (markupAmount === undefined) return 0;
+  if (user.userType !== 'ADMIN') throw ApiError.forbidden('Only the platform can set a markup on variants', 'MARKUP_ADMIN_ONLY');
+  const config = await loadPricingConfig('STORE', storeId);
+  if (!isMarkupModel(config)) throw ApiError.badRequest('A variant markup can only be set for a seller on the MARKUP pricing model', 'NOT_A_MARKUP_SELLER');
+  if (markupAmount < 0) throw ApiError.badRequest('Markup amount must be non-negative', 'INVALID_MARKUP_AMOUNT');
+  return round2(markupAmount);
 }
 
 export async function createInstamartVariant(productId: string, data: Record<string, unknown>, user: JwtPayload) {
   const product = await findProductOrThrow(productId);
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
-  return InstamartVariant.create({ ...data, productId });
+  const markupAmount = await extractInstamartVariantMarkup(data, product.storeId.toString(), user);
+  const variant = await InstamartVariant.create({ ...data, productId, markupAmount });
+  return childItemForViewer(variant.toJSON() as Record<string, unknown>, 'sellingPrice', user.userType);
 }
 
 export async function updateInstamartVariant(
@@ -444,9 +468,14 @@ export async function updateInstamartVariant(
   const product = await findProductOrThrow(productId);
   assertOwnerOrLocationAccess(user, product.storeId.toString(), product.locationId.toString());
 
-  const variant = await InstamartVariant.findOneAndUpdate({ _id: variantId, productId }, data, { new: true });
+  const hasMarkup = typeof data.markupAmount === 'number';
+  const markupAmount = await extractInstamartVariantMarkup(data, product.storeId.toString(), user);
+  const update: Record<string, unknown> = { ...data };
+  if (hasMarkup) update.markupAmount = markupAmount;
+
+  const variant = await InstamartVariant.findOneAndUpdate({ _id: variantId, productId }, update, { new: true });
   if (!variant) throw ApiError.notFound('Instamart variant not found', 'INSTAMART_VARIANT_NOT_FOUND');
-  return variant;
+  return childItemForViewer(variant.toJSON() as Record<string, unknown>, 'sellingPrice', user.userType);
 }
 
 export async function deleteInstamartVariant(productId: string, variantId: string, user: JwtPayload) {
