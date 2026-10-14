@@ -59,7 +59,7 @@ router.post('/:id/approve', authenticateAdmin, requirePermission(PERMISSIONS.VEN
 router.post('/:id/reject', authenticateAdmin, requirePermission(PERMISSIONS.VENDOR_APPROVE), validate(rejectVendorSchema), controller.reject);
 router.post('/:id/suspend', authenticateAdmin, requirePermission(PERMISSIONS.VENDOR_UPDATE), validate(vendorIdParamSchema), controller.suspend);
 router.post('/:id/activate', authenticateAdmin, requirePermission(PERMISSIONS.VENDOR_UPDATE), validate(vendorIdParamSchema), controller.activate);
-router.get('/:id/dashboard', authenticateAdmin, requirePermission(PERMISSIONS.VENDOR_VIEW), validate(vendorIdParamSchema), controller.dashboard);
+router.get('/:id/dashboard', selfOrAdminAccess, requirePermission(PERMISSIONS.VENDOR_VIEW), validate(vendorIdParamSchema), controller.dashboard);
 router.get('/:id/products', selfOrAdminOrCustomerAccess, requirePermission(PERMISSIONS.VENDOR_VIEW), validate(vendorIdParamSchema), controller.products);
 
 // /:id/orders, /:id/reviews, /:id/settlements are added once the Order, Review, and

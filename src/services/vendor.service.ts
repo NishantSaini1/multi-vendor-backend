@@ -179,7 +179,7 @@ export async function activateVendor(id: string, user: JwtPayload) {
 
 export async function getVendorDashboard(id: string, user: JwtPayload) {
   const vendor = await findVendorOrThrow(id);
-  assertLocationAccess(user, requireVendorLocationId(vendor));
+  assertVendorAccess(user, vendor);
 
   // Since Stage 2, price/availability live on the vendor's own VendorFoodItem
   // listing, not the (now global) FoodProduct — see vendorFoodItem.service.ts.
