@@ -4,6 +4,7 @@ import { runOrderTimeoutSweep } from './orderTimeout.job';
 import { runNotificationRetry } from './notificationRetry.job';
 import { runDailySettlementGeneration } from './settlementGeneration.job';
 import { runDeliveryAutoAssign } from './deliveryAutoAssign.job';
+import { runVendorScheduleSync } from './vendorSchedule.job';
 
 // OTP expiry itself is already handled by Redis TTL, so no cleanup job is
 // needed for that piece — only the three below have real work to do.
@@ -21,8 +22,9 @@ export function registerJobs(): void {
   cron.schedule('*/10 * * * *', safeRun('notificationRetry', runNotificationRetry));
   cron.schedule('0 1 * * *', safeRun('dailySettlementGeneration', runDailySettlementGeneration));
   cron.schedule('* * * * *', safeRun('deliveryAutoAssign', runDeliveryAutoAssign));
+  cron.schedule('* * * * *', safeRun('vendorScheduleSync', () => runVendorScheduleSync()));
 
   logger.info(
-    'Background jobs registered: orderTimeoutSweep (every 5m), notificationRetry (every 10m), dailySettlementGeneration (daily at 01:00), deliveryAutoAssign (every 1m)',
+    'Background jobs registered: orderTimeoutSweep (every 5m), notificationRetry (every 10m), dailySettlementGeneration (daily at 01:00), deliveryAutoAssign (every 1m), vendorScheduleSync (every 1m)',
   );
 }

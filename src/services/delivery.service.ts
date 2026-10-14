@@ -560,6 +560,17 @@ export async function getDeliveryTracking(id: string, user: JwtPayload) {
       partner?.currentLatitude !== undefined && partner?.currentLongitude !== undefined
         ? { latitude: partner.currentLatitude, longitude: partner.currentLongitude, updatedAt: partner.currentLocationUpdatedAt }
         : null,
+    // Who is delivering — shown on the customer's live tracking card. The phone
+    // is only shared while the delivery is still in progress.
+    partner: partner
+      ? {
+          name: partner.name,
+          profileImage: partner.profileImage ?? null,
+          rating: partner.rating,
+          ratingCount: partner.ratingCount,
+          phone: delivery.deliveredAt ? null : partner.phone,
+        }
+      : null,
     distance: delivery.distance,
     estimatedTime: delivery.estimatedTime,
     assignedAt: delivery.assignedAt,

@@ -31,6 +31,7 @@ import {
   loadPricingConfig,
 } from './pricing.service';
 import { assertDeliveryCapacity } from './deliveryCapacity.service';
+import { isWithinWindow, localTimeIn } from '../utils/businessHours';
 import { buildOrderFinancials, resolveSellerCommission } from './orderFinancials.service';
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { FOOD_ORDER_TRANSITIONS, INSTAMART_ORDER_TRANSITIONS } from '../constants/orderStatus';
@@ -361,6 +362,10 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
         `This store delivers within ${storeRadiusKm} km — your address is ${Math.round(storeDistanceKm * 10) / 10} km away`,
         'OUT_OF_SELLER_RANGE',
       );
+    }
+    // Stores open and close on their own opening/closing times (location wall-clock).
+    if (!isWithinWindow(store.openingTime, store.closingTime, localTimeIn(location.timezone).minutes)) {
+      throw ApiError.unprocessable('This store is closed right now', 'STORE_CLOSED');
     }
     storeId = store.id;
     deliveryDistanceKm = storeDistanceKm;
