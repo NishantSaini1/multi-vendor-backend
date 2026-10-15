@@ -1,4 +1,5 @@
 import { Store } from '../models/Store';
+import { allocateStoreCode } from '../utils/orderNumber';
 import { StoreDocument } from '../models/StoreDocument';
 import { InstamartProduct } from '../models/InstamartProduct';
 import { IInstamartGlobalProduct } from '../models/InstamartGlobalProduct';
@@ -68,9 +69,11 @@ export async function createStore(data: Record<string, unknown>) {
   await assertStoreTypesExist(storeTypeIds);
   const zone = await resolveZoneForStore(data.locationId as string, data.latitude as number, data.longitude as number);
   const password = await hashPassword(data.password as string);
+  const storeCode = (data.storeCode as string | undefined) || (await allocateStoreCode(data.name as string));
   return Store.create({
     ...data,
     password,
+    storeCode,
     deliveryZoneId: zone.id,
     status: STORE_STATUS.ACTIVE,
     approvalStatus: STORE_APPROVAL_STATUS.PENDING,

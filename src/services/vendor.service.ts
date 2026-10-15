@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { Vendor } from '../models/Vendor';
+import { allocateStoreCode } from '../utils/orderNumber';
 import { VendorDocument } from '../models/VendorDocument';
 import { VendorFoodItem } from '../models/VendorFoodItem';
 import { FoodCategory } from '../models/FoodCategory';
@@ -52,8 +53,9 @@ export async function createVendor(data: Record<string, unknown>) {
   try {
     let createdVendor: InstanceType<typeof Vendor> | undefined;
     await session.withTransaction(async () => {
+      const storeCode = (vendorData.storeCode as string | undefined) || (await allocateStoreCode(vendorData.restaurantName as string));
       const [vendor] = await Vendor.create(
-        [{ ...vendorData, password, status: VENDOR_STATUS.ACTIVE, approvalStatus: APPROVAL_STATUS.PENDING }],
+        [{ ...vendorData, password, storeCode, status: VENDOR_STATUS.ACTIVE, approvalStatus: APPROVAL_STATUS.PENDING }],
         { session },
       );
       createdVendor = vendor;

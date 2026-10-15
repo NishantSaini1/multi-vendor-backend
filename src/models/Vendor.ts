@@ -62,6 +62,9 @@ export interface IVendor extends Document {
   // vendor sells. Unset on vendors that still rely on the older Commission
   // rules (see order.service's commission resolution).
   commissionPercent?: number;
+  // Short unique code used in order numbers: ANI-{storeCode}-{seq}.
+  // Auto-generated on create from the restaurant name if not supplied by admin.
+  storeCode?: string;
   isOpen: boolean;
   temporaryClosure?: IVendorTemporaryClosure | null;
   businessHours?: IVendorBusinessHours;
@@ -128,6 +131,7 @@ const vendorSchema = new Schema<IVendor>(
     approvalStatus: { type: String, enum: Object.values(APPROVAL_STATUS), default: APPROVAL_STATUS.PENDING },
     pricingModel: { type: String, enum: Object.values(PRICING_MODELS), default: PRICING_MODELS.COMMISSION },
     commissionPercent: { type: Number, min: 0, max: 100 },
+    storeCode: { type: String, uppercase: true, trim: true, sparse: true, unique: true },
     isOpen: { type: Boolean, default: false },
     temporaryClosure: {
       type: new Schema<IVendorTemporaryClosure>({ reopensAt: { type: Date }, reason: { type: String } }, { _id: false }),

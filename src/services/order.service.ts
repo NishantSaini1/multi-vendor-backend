@@ -330,6 +330,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
 
   let vendorId: string | undefined;
   let storeId: string | undefined;
+  let sellerCode: string | undefined;
   let deliveryDistanceKm = 0;
   let pickupPoint: { latitude: number; longitude: number };
 
@@ -353,6 +354,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       );
     }
     vendorId = vendor.id;
+    sellerCode = vendor.storeCode;
     deliveryDistanceKm = distanceKm;
     pickupPoint = { latitude: vendor.latitude, longitude: vendor.longitude };
   } else {
@@ -376,6 +378,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       throw ApiError.unprocessable('This store is closed right now', 'STORE_CLOSED');
     }
     storeId = store.id;
+    sellerCode = store.storeCode;
     deliveryDistanceKm = storeDistanceKm;
     pickupPoint = { latitude: store.latitude, longitude: store.longitude };
   }
@@ -486,7 +489,7 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
       const [order] = await Order.create(
         [
           {
-            orderNumber: generateOrderNumber(),
+            orderNumber: await generateOrderNumber(sellerCode ?? 'GEN', session),
             locationId: location.id,
             businessType,
             customerId,

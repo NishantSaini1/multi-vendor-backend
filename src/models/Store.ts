@@ -41,6 +41,9 @@ export interface IStore extends Document {
   // on the store profile (never per product). Unset on stores that still rely
   // on the older Commission rules.
   commissionPercent?: number;
+  // Short unique code used in order numbers: ANI-{storeCode}-{seq}.
+  // Auto-generated on create from the store name if not supplied by admin.
+  storeCode?: string;
   openingTime: string;
   closingTime: string;
   rating: number;
@@ -75,6 +78,7 @@ const storeSchema = new Schema<IStore>(
     approvalStatus: { type: String, enum: Object.values(STORE_APPROVAL_STATUS), default: STORE_APPROVAL_STATUS.PENDING },
     pricingModel: { type: String, enum: Object.values(PRICING_MODELS), default: PRICING_MODELS.COMMISSION },
     commissionPercent: { type: Number, min: 0, max: 100 },
+    storeCode: { type: String, uppercase: true, trim: true, sparse: true, unique: true },
     openingTime: { type: String, default: '09:00' },
     closingTime: { type: String, default: '22:00' },
     rating: { type: Number, default: 0 },
