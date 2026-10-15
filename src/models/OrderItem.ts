@@ -24,6 +24,11 @@ export interface IOrderItem extends Document {
   orderId: Types.ObjectId;
   productId: Types.ObjectId;
   variantId?: Types.ObjectId;
+  // Snapshot of the chosen variant at order time (e.g. "Half Plate", 250 GRAM).
+  variantName?: string;
+  variantType?: string;
+  quantityValue?: number;
+  quantityUnit?: string;
   name: string;
   // What the customer paid per unit. Under the MARKUP pricing model this is
   // the vendor's price plus the platform markup; vendorPrice is the vendor's
@@ -89,6 +94,10 @@ const orderItemSchema = new Schema<IOrderItem>(
     orderId: { type: Schema.Types.ObjectId, ref: 'Order', required: true, index: true },
     productId: { type: Schema.Types.ObjectId, required: true },
     variantId: { type: Schema.Types.ObjectId },
+    variantName: { type: String },
+    variantType: { type: String },
+    quantityValue: { type: Number },
+    quantityUnit: { type: String },
     name: { type: String, required: true },
     price: { type: Number, required: true, min: 0 },
     vendorPrice: { type: Number, min: 0 },

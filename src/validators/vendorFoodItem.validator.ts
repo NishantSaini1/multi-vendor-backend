@@ -1,7 +1,45 @@
 import { z } from 'zod';
-import { GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
+import { FOOD_TYPE, QUANTITY_UNIT, VARIANT_TYPE, GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 const objectId = z.string().length(24);
+
+// Quantity of one unit, e.g. 6 PIECE / 500 GRAM. null clears it (update only).
+const quantityUnitEnum = z.enum(Object.values(QUANTITY_UNIT) as [string, ...string[]]);
+const quantityFields = {
+  quantityValue: z.number().positive().optional(),
+  quantityUnit: quantityUnitEnum.optional(),
+};
+const quantityUpdateFields = {
+  quantityValue: z.number().positive().nullable().optional(),
+  quantityUnit: quantityUnitEnum.nullable().optional(),
+};
+
+// Variant-only fields (see FoodVariant). null clears one (update only).
+const variantTypeEnum = z.enum(Object.values(VARIANT_TYPE) as [string, ...string[]]);
+const variantAvailabilityEnum = z.enum(['AVAILABLE', 'OUT_OF_STOCK']);
+const variantExtraFields = {
+  variantType: variantTypeEnum.optional(),
+  mrp: z.number().nonnegative().optional(),
+  sku: z.string().trim().max(60).optional(),
+  availabilityStatus: variantAvailabilityEnum.optional(),
+};
+const variantExtraUpdateFields = {
+  variantType: variantTypeEnum.nullable().optional(),
+  mrp: z.number().nonnegative().nullable().optional(),
+  sku: z.string().trim().max(60).nullable().optional(),
+  availabilityStatus: variantAvailabilityEnum.optional(),
+};
+
+// Per-vendor overrides of the shared catalog entry (see VendorFoodItem model).
+// null clears an override (falls back to the catalog value).
+const vendorOverrideFields = {
+  name: z.string().trim().min(1).max(150).nullable().optional(),
+  description: z.string().max(2000).nullable().optional(),
+  images: z.array(z.string()).max(10).nullable().optional(),
+  foodType: z.enum(Object.values(FOOD_TYPE) as [string, ...string[]]).nullable().optional(),
+  categoryId: objectId.nullable().optional(),
+  subcategoryId: objectId.nullable().optional(),
+};
 
 export const vendorIdParamSchema = z.object({
   params: z.object({ vendorId: objectId }),
@@ -26,6 +64,7 @@ export const createVendorFoodItemSchema = z.object({
     costPrice: z.number().nonnegative().optional(),
     preparationTime: z.number().int().positive().default(20),
     vendorSku: z.string().optional(),
+    ...quantityFields,
   }),
 });
 
@@ -43,6 +82,8 @@ export const updateVendorFoodItemSchema = z.object({
     costPrice: z.number().nonnegative().optional(),
     preparationTime: z.number().int().positive().optional(),
     vendorSku: z.string().optional(),
+    ...quantityUpdateFields,
+    ...vendorOverrideFields,
     availabilityStatus: z.enum(Object.values(VENDOR_FOOD_ITEM_AVAILABILITY) as [string, ...string[]]).optional(),
     status: z.enum(Object.values(GENERIC_STATUS) as [string, ...string[]]).optional(),
   }),
@@ -58,18 +99,23 @@ export const updateVendorFoodItemAvailabilitySchema = z.object({
 export const createFoodVariantSchema = z.object({
   params: z.object({ vendorId: objectId, id: objectId }),
   body: z.object({
-    name: z.string().min(1),
+    // Optional: defaults to the variant type / quantity ("Half Plate", "6 Pieces").
+    name: z.string().trim().min(1).optional(),
     price: z.number().nonnegative(),
     isDefault: z.boolean().default(false),
+    ...variantExtraFields,
+    ...quantityFields,
   }),
 });
 
 export const updateFoodVariantSchema = z.object({
   params: z.object({ vendorId: objectId, id: objectId, variantId: objectId }),
   body: z.object({
-    name: z.string().min(1).optional(),
+    name: z.string().trim().min(1).optional(),
     price: z.number().nonnegative().optional(),
     isDefault: z.boolean().optional(),
+    ...variantExtraUpdateFields,
+    ...quantityUpdateFields,
     status: z.enum(Object.values(GENERIC_STATUS) as [string, ...string[]]).optional(),
   }),
 });

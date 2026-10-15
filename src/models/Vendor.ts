@@ -7,8 +7,16 @@ export interface IVendorTemporaryClosure {
   reason?: string;
 }
 
+export interface IVendorTimeSlot {
+  openTime: string; // "HH:mm"
+  closeTime: string;
+}
+
 export interface IVendorBusinessHoursDay {
   day: string;
+  // One day can have several open windows (e.g. breakfast / lunch / dinner).
+  // When `slots` is empty the legacy single openTime/closeTime pair applies.
+  slots?: IVendorTimeSlot[];
   openTime?: string;
   closeTime?: string;
   isClosed: boolean;
@@ -61,9 +69,18 @@ export interface IVendor extends Document {
   updatedAt: Date;
 }
 
+const vendorTimeSlotSchema = new Schema<IVendorTimeSlot>(
+  {
+    openTime: { type: String, required: true },
+    closeTime: { type: String, required: true },
+  },
+  { _id: false },
+);
+
 const vendorBusinessHoursDaySchema = new Schema<IVendorBusinessHoursDay>(
   {
     day: { type: String, enum: Object.values(DAYS_OF_WEEK), required: true },
+    slots: { type: [vendorTimeSlotSchema], default: [] },
     openTime: { type: String },
     closeTime: { type: String },
     isClosed: { type: Boolean, default: false },

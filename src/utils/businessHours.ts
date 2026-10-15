@@ -21,11 +21,31 @@ export interface LocalTime {
   dateKey: string; // local YYYY-MM-DD
 }
 
+export interface TimeSlot {
+  openTime?: string | null;
+  closeTime?: string | null;
+}
+
 export interface ScheduleDay {
   day: string;
+  slots?: TimeSlot[];
   openTime?: string | null;
   closeTime?: string | null;
   isClosed?: boolean;
+}
+
+// A day's open windows: its `slots` when it has any, else the single legacy
+// openTime/closeTime pair (older vendors / older clients).
+export function daySlots(entry: ScheduleDay): TimeSlot[] {
+  return entry.slots && entry.slots.length ? entry.slots : [{ openTime: entry.openTime, closeTime: entry.closeTime }];
+}
+
+// Is `minutes` inside this one window? No usable times = all day.
+function inSlot(slot: TimeSlot, minutes: number): boolean {
+  const o = parseHHmm(slot.openTime);
+  const c = parseHHmm(slot.closeTime);
+  if (o === null || c === null || o === c) return true;
+  return o < c ? minutes >= o && minutes < c : minutes >= o;
 }
 
 export interface Schedule {
@@ -92,18 +112,17 @@ export function isScheduledOpen(schedule: Schedule, local: LocalTime): boolean {
 
   const today = entry(local.day);
   if (!holiday && today && !today.isClosed) {
-    const o = parseHHmm(today.openTime);
-    const c = parseHHmm(today.closeTime);
-    if (o === null || c === null || o === c) return true; // listed open with no usable times: all day
-    if (o < c ? local.minutes >= o && local.minutes < c : local.minutes >= o) return true;
+    if (daySlots(today).some((slot) => inSlot(slot, local.minutes))) return true;
   }
 
   // tail of yesterday's overnight window
   const prev = entry(local.yesterday);
   if (prev && !prev.isClosed) {
-    const o = parseHHmm(prev.openTime);
-    const c = parseHHmm(prev.closeTime);
-    if (o !== null && c !== null && o > c && local.minutes < c) return true;
+    for (const slot of daySlots(prev)) {
+      const o = parseHHmm(slot.openTime);
+      const c = parseHHmm(slot.closeTime);
+      if (o !== null && c !== null && o > c && local.minutes < c) return true;
+    }
   }
   return false;
 }

@@ -44,6 +44,58 @@ export const FOOD_TYPE = {
   VEGAN: 'VEGAN',
 } as const;
 
+// The unit of a Food item's / variant's quantity (e.g. 6 PIECE, 500 GRAM, 1 KG).
+export const QUANTITY_UNIT = {
+  PIECE: 'PIECE',
+  PLATE: 'PLATE',
+  BOWL: 'BOWL',
+  CUP: 'CUP',
+  GLASS: 'GLASS',
+  THALI: 'THALI',
+  ROTI: 'ROTI',
+  PARATHA: 'PARATHA',
+  SLICE: 'SLICE',
+  GRAM: 'GRAM',
+  KG: 'KG',
+  ML: 'ML',
+  LITRE: 'LITRE',
+  PACKET: 'PACKET',
+  PACK: 'PACK',
+  BOX: 'BOX',
+  BOTTLE: 'BOTTLE',
+  CAN: 'CAN',
+  DOZEN: 'DOZEN',
+  PAIR: 'PAIR',
+  COMBO: 'COMBO',
+  SET: 'SET',
+} as const;
+
+// A variant's serving size / portion type (e.g. Half Plate, Large, Family Pack).
+export const VARIANT_TYPE = {
+  QUARTER_PLATE: 'QUARTER_PLATE',
+  HALF_PLATE: 'HALF_PLATE',
+  FULL_PLATE: 'FULL_PLATE',
+  HALF_PORTION: 'HALF_PORTION',
+  FULL_PORTION: 'FULL_PORTION',
+  SMALL: 'SMALL',
+  REGULAR: 'REGULAR',
+  MEDIUM: 'MEDIUM',
+  LARGE: 'LARGE',
+  EXTRA_LARGE: 'EXTRA_LARGE',
+  MINI: 'MINI',
+  SINGLE: 'SINGLE',
+  DOUBLE: 'DOUBLE',
+  TRIPLE: 'TRIPLE',
+  JUMBO: 'JUMBO',
+  SINGLE_SERVING: 'SINGLE_SERVING',
+  FAMILY_PACK: 'FAMILY_PACK',
+  PARTY_PACK: 'PARTY_PACK',
+  HALF: 'HALF',
+  FULL: 'FULL',
+  QUARTER: 'QUARTER',
+  COMBO: 'COMBO',
+} as const;
+
 // FoodProduct (the global, admin-managed catalog item) lifecycle — distinct
 // from GENERIC_STATUS since an item can be awaiting/rejected from a vendor's
 // FoodItemSubmission, not just ACTIVE/INACTIVE.

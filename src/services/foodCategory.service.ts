@@ -72,12 +72,23 @@ export async function categoryIdsInLocation(locationId: string, coords?: { lat: 
     vendorIds = await Vendor.distinct('_id', vendorFilter);
   }
   if (!vendorIds.length) return [];
-  const globalItemIds = await VendorFoodItem.distinct('globalFoodItemId', {
-    vendorId: { $in: vendorIds },
-    status: GENERIC_STATUS.ACTIVE,
+  const listingFilter = { vendorId: { $in: vendorIds }, status: GENERIC_STATUS.ACTIVE };
+  // A listing sits under the vendor's own category override when set,
+  // otherwise under its catalog item's category.
+  const [overrideCategoryIds, globalItemIds] = await Promise.all([
+    VendorFoodItem.distinct('categoryId', { ...listingFilter, categoryId: { $ne: null } }),
+    VendorFoodItem.distinct('globalFoodItemId', { ...listingFilter, categoryId: null }),
+  ]);
+  const catalogCategoryIds = globalItemIds.length
+    ? await FoodProduct.distinct('categoryId', { _id: { $in: globalItemIds }, status: GLOBAL_FOOD_ITEM_STATUS.ACTIVE })
+    : [];
+  const seen = new Set<string>();
+  return [...overrideCategoryIds, ...catalogCategoryIds].filter((id) => {
+    const key = String(id);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
-  if (!globalItemIds.length) return [];
-  return FoodProduct.distinct('categoryId', { _id: { $in: globalItemIds }, status: GLOBAL_FOOD_ITEM_STATUS.ACTIVE });
 }
 
 export async function listFoodCategories(

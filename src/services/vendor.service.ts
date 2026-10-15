@@ -15,6 +15,8 @@ import { VENDOR_STATUS, APPROVAL_STATUS, COMMISSION_LEVELS, GENERIC_STATUS, VEND
 import { BUSINESS_TYPES } from '../constants/orderStatus';
 import { findSellersInRange } from '../utils/geoQuery';
 import { productForViewer, syncSellerProductPrices } from './pricing.service';
+import { withVendorOverrides } from './vendorFoodItemOverlay';
+import { attachVariants } from './vendorFoodItem.service';
 
 export async function listVendors(filter: Record<string, unknown>, pagination: PaginationParams) {
   const [items, total] = await Promise.all([
@@ -218,35 +220,35 @@ export async function getVendorProducts(
     VendorFoodItem.countDocuments(query),
   ]);
 
+  // Apply this vendor's own overrides (name/photos/category…) over the
+  // catalog values first, so everything below sees the effective item.
+  const overlaid = items.map((item) => withVendorOverrides(item.toJSON() as Record<string, unknown>));
+  const categoryOf = (json: Record<string, unknown>) =>
+    (json.globalFoodItemId as { categoryId?: { toString(): string } } | null)?.categoryId?.toString();
+
   // Resolve each item's category name here (one query), since the customer
   // /food/categories listing hides vendor-private and INACTIVE categories —
   // without this a menu can't label items filed under those. Additive
   // fields only; the populated globalFoodItemId shape is unchanged.
-  const categoryIds = [
-    ...new Set(
-      items
-        .map((item) => (item.globalFoodItemId as unknown as { categoryId?: mongoose.Types.ObjectId } | null)?.categoryId?.toString())
-        .filter((cid): cid is string => Boolean(cid)),
-    ),
-  ];
+  const categoryIds = [...new Set(overlaid.map(categoryOf).filter((cid): cid is string => Boolean(cid)))];
   const categories = categoryIds.length
     ? await FoodCategory.find({ _id: { $in: categoryIds } }).select('name displayOrder')
     : [];
   const categoryById = new Map(categories.map((c) => [c.id as string, c]));
   // Only an admin sees a product's markup (see pricing.service's productForViewer).
-  const withCategory = items.map((item) => {
-    const cid = (item.globalFoodItemId as unknown as { categoryId?: mongoose.Types.ObjectId } | null)?.categoryId?.toString();
+  const withCategory = overlaid.map((json) => {
+    const cid = categoryOf(json);
     const category = cid ? categoryById.get(cid) : undefined;
     return productForViewer(
       {
-        ...item.toJSON(),
+        ...json,
         categoryName: category?.name ?? null,
         categoryDisplayOrder: (category as unknown as { displayOrder?: number } | undefined)?.displayOrder ?? null,
       } as Record<string, unknown>,
       user.userType,
     );
   });
-  return { items: withCategory, total };
+  return { items: await attachVariants(withCategory, user.userType), total };
 }
 
 export async function listVendorDocuments(vendorId: string, user: JwtPayload) {
@@ -290,10 +292,13 @@ export async function vendorIdsSellingCategory(categoryId: string, subcategoryId
   const productFilter: Record<string, unknown> = { categoryId };
   if (subcategoryId) productFilter.subcategoryId = subcategoryId;
   const productIds = await FoodProduct.find(productFilter).distinct('_id');
-  if (productIds.length === 0) return [];
+  // A listing counts under its effective category: the vendor's own override
+  // when set, otherwise the catalog item's.
+  const overrideMatch: Record<string, unknown> = { categoryId };
+  if (subcategoryId) overrideMatch.subcategoryId = subcategoryId;
   const vendorIds = await VendorFoodItem.find({
-    globalFoodItemId: { $in: productIds },
     status: GENERIC_STATUS.ACTIVE,
+    $or: [overrideMatch, { categoryId: null, globalFoodItemId: { $in: productIds } }],
   }).distinct('vendorId');
   return vendorIds.map((id) => String(id));
 }

@@ -148,6 +148,9 @@ export async function resolveFoodLineItem(
     if (found.status !== GENERIC_STATUS.ACTIVE) {
       throw ApiError.unprocessable(`${globalItem.name} (${found.name}) is not currently available`, 'VARIANT_NOT_AVAILABLE');
     }
+    if (found.availabilityStatus === 'OUT_OF_STOCK') {
+      throw ApiError.unprocessable(`${globalItem.name} (${found.name}) is currently out of stock`, 'VARIANT_NOT_AVAILABLE');
+    }
     variant = found;
     vendorUnitPrice = baseProductPrice(vendorFoodItem, found.price);
   }
@@ -161,11 +164,11 @@ export async function resolveFoodLineItem(
     vendorFoodItem,
     globalItem,
     variant,
-    name: globalItem.name,
+    name: vendorFoodItem.name || globalItem.name,
     unitPrice,
     vendorUnitPrice,
     markupAmount,
-    mrp: vendorFoodItem.mrp,
+    mrp: variant?.mrp ?? vendorFoodItem.mrp,
     modifiers,
     modifiersUnitTotal,
   };

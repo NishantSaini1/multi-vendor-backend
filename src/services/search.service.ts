@@ -98,8 +98,8 @@ export async function search(query: string, filter: SearchFilter) {
   ]);
 
   let foodProducts: Record<string, unknown>[] = [];
-  if (matchedFoodProducts.length > 0) {
-    const globalById = new Map(matchedFoodProducts.map((g) => [g._id.toString(), g]));
+  if (includeFood) {
+    const globalById = new Map<string, (typeof matchedFoodProducts)[number]>(matchedFoodProducts.map((g) => [g._id.toString(), g]));
     // Only listings from vendors a customer could actually order from (and,
     // when given, in their city) — same visibility rule as the vendor results.
     const eligibleVendorIds = await Vendor.find({
@@ -109,23 +109,32 @@ export async function search(query: string, filter: SearchFilter) {
     }).distinct('_id');
 
     const listings = await VendorFoodItem.find({
-      globalFoodItemId: { $in: matchedFoodProducts.map((g) => g._id) },
+      // A listing matches via its catalog item OR via its own renamed/described override.
+      $or: [{ globalFoodItemId: { $in: matchedFoodProducts.map((g) => g._id) } }, buildMatch(terms, ['name', 'description'])],
       vendorId: { $in: eligibleVendorIds },
       status: GENERIC_STATUS.ACTIVE,
     })
       .limit(RESULT_LIMIT)
       .populate('vendorId', 'restaurantName logo rating ratingCount');
 
+    // Listings found only through their own override need their catalog item
+    // (still required to be ACTIVE) loaded too.
+    const missingGlobalIds = listings.map((l) => l.globalFoodItemId.toString()).filter((gid) => !globalById.has(gid));
+    if (missingGlobalIds.length) {
+      const extra = await FoodProduct.find({ _id: { $in: missingGlobalIds }, status: GLOBAL_FOOD_ITEM_STATUS.ACTIVE });
+      extra.forEach((g) => globalById.set(g._id.toString(), g));
+    }
+
     foodProducts = listings
-      .filter((listing) => listing.vendorId)
+      .filter((listing) => listing.vendorId && globalById.has(listing.globalFoodItemId.toString()))
       .map((listing) => {
         const globalItem = globalById.get(listing.globalFoodItemId.toString())!;
         const plain = listing.toObject() as unknown as Record<string, unknown>;
         Object.assign(plain, {
-          name: globalItem.name,
-          description: globalItem.description,
-          images: globalItem.images,
-          foodType: globalItem.foodType,
+          name: listing.name || globalItem.name,
+          description: listing.description || globalItem.description,
+          images: listing.images?.length ? listing.images : globalItem.images,
+          foodType: listing.foodType || globalItem.foodType,
         });
         const vendor = plain.vendorId as unknown as {
           _id: unknown;

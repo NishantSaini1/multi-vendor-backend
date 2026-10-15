@@ -75,6 +75,10 @@ interface CreateOrderInput {
 interface PreparedOrderItem {
   productId: string;
   variantId?: string;
+  variantName?: string;
+  variantType?: string;
+  quantityValue?: number;
+  quantityUnit?: string;
   name: string;
   // Customer-facing unit price (seller base price + fixed markup).
   price: number;
@@ -156,6 +160,10 @@ async function prepareFoodItems(vendorId: string, items: CreateOrderItemInput[])
     prepared.push({
       productId: resolved.vendorFoodItem.id,
       variantId: input.variantId,
+      variantName: resolved.variant?.name,
+      variantType: resolved.variant?.variantType,
+      quantityValue: resolved.variant?.quantityValue,
+      quantityUnit: resolved.variant?.quantityUnit,
       name: resolved.name,
       price: resolved.unitPrice,
       vendorPrice: resolved.vendorUnitPrice,
@@ -561,6 +569,10 @@ export async function createOrder(customerId: string, data: CreateOrderInput) {
           orderId: order.id,
           productId: item.productId,
           variantId: item.variantId,
+          variantName: item.variantName,
+          variantType: item.variantType,
+          quantityValue: item.quantityValue,
+          quantityUnit: item.quantityUnit,
           name: item.name,
           price: item.price,
           vendorPrice: item.vendorPrice,

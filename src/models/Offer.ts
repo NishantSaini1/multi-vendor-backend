@@ -8,6 +8,8 @@ export interface IOffer extends Document {
   description?: string;
   discountType: string;
   discountValue: number;
+  // The offer applies to orders of at least this amount (0 = any order).
+  minimumOrder: number;
   locationIds: Types.ObjectId[];
   businessType?: string;
   vendorIds: Types.ObjectId[];
@@ -30,6 +32,7 @@ const offerSchema = new Schema<IOffer>(
     description: { type: String },
     discountType: { type: String, enum: Object.values(DISCOUNT_TYPES), required: true },
     discountValue: { type: Number, required: true, min: 0 },
+    minimumOrder: { type: Number, default: 0, min: 0 },
     locationIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Location' }], default: [] },
     businessType: { type: String, enum: Object.values(BUSINESS_TYPES) },
     vendorIds: { type: [{ type: Schema.Types.ObjectId, ref: 'Vendor' }], default: [] },

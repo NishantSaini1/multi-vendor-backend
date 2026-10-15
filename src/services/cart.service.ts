@@ -81,7 +81,15 @@ export async function getCart(customerId: string) {
       }
 
       subtotal += itemTotal;
-      resolvedItems.push({ ...item.toObject(), name: resolved.name, unavailable: false });
+      resolvedItems.push({
+        ...item.toObject(),
+        name: resolved.name,
+        variantName: resolved.variant?.name,
+        variantType: resolved.variant?.variantType,
+        quantityValue: resolved.variant?.quantityValue,
+        quantityUnit: resolved.variant?.quantityUnit,
+        unavailable: false,
+      });
     } catch {
       resolvedItems.push({ ...item.toObject(), unavailable: true });
     }

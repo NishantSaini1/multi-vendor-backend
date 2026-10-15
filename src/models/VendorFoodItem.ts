@@ -1,5 +1,5 @@
 import { Schema, model, Document, Types } from 'mongoose';
-import { GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
+import { FOOD_TYPE, QUANTITY_UNIT, GENERIC_STATUS, VENDOR_FOOD_ITEM_AVAILABILITY } from '../constants/enums';
 
 // A vendor's own listing of a GLOBAL Food Item (FoodProduct) — price, mrp,
 // cost, prep time, and day-to-day availability all live here since they're
@@ -24,6 +24,18 @@ export interface IVendorFoodItem extends Document {
   availabilityStatus: string;
   preparationTime: number;
   vendorSku?: string;
+  // What one unit of this listing is, e.g. 6 PIECE / 500 GRAM / 1 KG.
+  quantityValue?: number;
+  quantityUnit?: string;
+  // Per-vendor overrides of the shared catalog entry (FoodProduct). When set they
+  // replace the catalog value for THIS vendor's listing only — the global item
+  // is never modified. See vendorFoodItemOverlay.ts.
+  name?: string;
+  description?: string;
+  images?: string[];
+  foodType?: string;
+  categoryId?: Types.ObjectId;
+  subcategoryId?: Types.ObjectId;
   status: string;
   createdAt: Date;
   updatedAt: Date;
@@ -46,6 +58,14 @@ const vendorFoodItemSchema = new Schema<IVendorFoodItem>(
     },
     preparationTime: { type: Number, default: 20 },
     vendorSku: { type: String },
+    quantityValue: { type: Number, min: 0 },
+    quantityUnit: { type: String, enum: Object.values(QUANTITY_UNIT) },
+    name: { type: String, trim: true },
+    description: { type: String },
+    images: { type: [String], default: undefined },
+    foodType: { type: String, enum: Object.values(FOOD_TYPE) },
+    categoryId: { type: Schema.Types.ObjectId, ref: 'FoodCategory', index: true },
+    subcategoryId: { type: Schema.Types.ObjectId, ref: 'FoodSubcategory' },
     status: { type: String, enum: Object.values(GENERIC_STATUS), default: GENERIC_STATUS.ACTIVE },
   },
   { timestamps: true },

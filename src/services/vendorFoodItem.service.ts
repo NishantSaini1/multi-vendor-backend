@@ -8,8 +8,11 @@ import { PaginationParams } from '../utils/pagination';
 import { JwtPayload } from '../utils/jwt';
 import { assertOwnerOrLocationAccess } from '../middleware/rbac.middleware';
 import { GLOBAL_FOOD_ITEM_STATUS } from '../constants/enums';
+import { FoodProduct } from '../models/FoodProduct';
 import { findFoodProductOrThrow } from './foodProduct.service';
-import { assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
+import { assertCategoryAndSubcategoryExist, assertVendorHasCatalogAccess } from './vendorCatalogAccess.service';
+import { OVERRIDE_FIELDS, withVendorOverrides } from './vendorFoodItemOverlay';
+import { defaultVariantName } from '../utils/foodQuantity';
 import { applyProductPricing, childItemForViewer, hasPricingRequest, isMarkupModel, pricingRequestFromInput, productForViewer, round2, toPricingConfig } from './pricing.service';
 
 async function assertVendorAccess(vendorId: string, user: JwtPayload) {
@@ -43,7 +46,8 @@ export async function listVendorFoodItems(
     VendorFoodItem.countDocuments(query),
   ]);
   // Only an admin sees a product's markup.
-  return { items: items.map((item) => productForViewer(item.toJSON() as Record<string, unknown>, user.userType)), total };
+  const shaped = items.map((item) => productForViewer(withVendorOverrides(item.toJSON() as Record<string, unknown>), user.userType));
+  return { items: await attachVariants(shaped, user.userType), total };
 }
 
 // "Add existing item" — a vendor picks a globalFoodItemId from the browsable
@@ -64,6 +68,8 @@ export async function addVendorFoodItem(
     costPrice?: number;
     preparationTime?: number;
     vendorSku?: string;
+    quantityValue?: number;
+    quantityUnit?: string;
   },
   user: JwtPayload,
 ) {
@@ -91,9 +97,11 @@ export async function addVendorFoodItem(
       costPrice: data.costPrice,
       preparationTime: data.preparationTime,
       vendorSku: data.vendorSku,
+      quantityValue: data.quantityValue,
+      quantityUnit: data.quantityUnit,
     });
     await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
-    return productForViewer(item.toJSON() as Record<string, unknown>, user.userType);
+    return productForViewer(withVendorOverrides(item.toJSON() as Record<string, unknown>), user.userType);
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && (err as { code?: number }).code === 11000) {
       throw ApiError.conflict('You already have a listing for this item', 'VENDOR_FOOD_ITEM_ALREADY_EXISTS');
@@ -113,7 +121,7 @@ export async function getVendorFoodItemById(vendorId: string, id: string, user: 
   await assertVendorAccess(vendorId, user);
   const item = await findVendorFoodItemOrThrow(vendorId, id);
   await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
-  return productForViewer(item.toJSON() as Record<string, unknown>, user.userType);
+  return productForViewer(withVendorOverrides(item.toJSON() as Record<string, unknown>), user.userType);
 }
 
 export async function updateVendorFoodItem(vendorId: string, id: string, data: Record<string, unknown>, user: JwtPayload) {
@@ -130,13 +138,38 @@ export async function updateVendorFoodItem(vendorId: string, id: string, data: R
   const config = toPricingConfig(vendor);
   const request = pricingRequestFromInput(data, 'price');
 
+  // Per-vendor overrides of the catalog entry. If the category/subcategory
+  // changes it must exist and be one this vendor may use (own, or granted).
+  if (data.categoryId !== undefined || data.subcategoryId !== undefined) {
+    const current = await FoodProduct.findById(item.globalFoodItemId).select('categoryId subcategoryId');
+    const categoryId = (data.categoryId as string | null | undefined) ?? item.categoryId?.toString() ?? current?.categoryId?.toString();
+    const subcategoryId =
+      data.subcategoryId !== undefined
+        ? (data.subcategoryId as string | null)
+        : data.categoryId !== undefined
+          ? null // moved to another category: don't keep the old subcategory
+          : item.subcategoryId?.toString() ?? current?.subcategoryId?.toString() ?? null;
+    if (categoryId) {
+      await assertCategoryAndSubcategoryExist(categoryId, subcategoryId);
+      await assertVendorHasCatalogAccess(vendorId, categoryId, subcategoryId);
+    }
+    if (data.categoryId !== undefined && data.subcategoryId === undefined) data.subcategoryId = null;
+  }
+  // null clears an override (catalog value shows through) or the quantity.
+  for (const field of [...OVERRIDE_FIELDS, 'quantityValue', 'quantityUnit'] as const) {
+    if (data[field] === null) {
+      item.set(field, undefined);
+      delete data[field];
+    }
+  }
+
   Object.assign(item, data);
   if (hasPricingRequest(request) || data.mrp !== undefined) {
     applyProductPricing(item, 'price', config, user, request, item.mrp);
   }
   await item.save();
   await item.populate('globalFoodItemId', GLOBAL_ITEM_POPULATE_FIELDS);
-  return productForViewer(item.toJSON() as Record<string, unknown>, user.userType);
+  return productForViewer(withVendorOverrides(item.toJSON() as Record<string, unknown>), user.userType);
 }
 
 export async function deleteVendorFoodItem(vendorId: string, id: string, user: JwtPayload) {
@@ -161,6 +194,24 @@ export async function updateVendorFoodItemAvailability(
 
 // --- Variants ---
 
+// Adds a `variants` array to each item JSON (one query) so a menu/list can show
+// every size without a call per item. Customers only see ACTIVE variants.
+export async function attachVariants<T extends Record<string, unknown>>(items: T[], userType: string): Promise<T[]> {
+  const ids = items.map((i) => i._id).filter(Boolean);
+  if (!ids.length) return items;
+  const filter: Record<string, unknown> = { vendorFoodItemId: { $in: ids } };
+  if (userType === 'CUSTOMER') filter.status = 'ACTIVE';
+  const variants = await FoodVariant.find(filter).sort({ isDefault: -1, price: 1 });
+  const byItem = new Map<string, Record<string, unknown>[]>();
+  for (const v of variants) {
+    const key = String(v.vendorFoodItemId);
+    const list = byItem.get(key) ?? [];
+    list.push(childItemForViewer(v.toJSON() as Record<string, unknown>, 'price', userType));
+    byItem.set(key, list);
+  }
+  return items.map((item) => ({ ...item, variants: byItem.get(String(item._id)) ?? [] }));
+}
+
 export async function listFoodVariants(vendorId: string, itemId: string, user: JwtPayload) {
   await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
@@ -178,11 +229,23 @@ function extractMarkupAmount(data: Record<string, unknown>, vendor: { pricingMod
   return round2(markupAmount);
 }
 
+function assertVariantMrp(price: unknown, mrp: unknown) {
+  if (typeof price === 'number' && typeof mrp === 'number' && mrp > 0 && price > mrp) {
+    throw ApiError.badRequest('Selling price cannot be greater than MRP', 'SELLING_PRICE_ABOVE_MRP');
+  }
+}
+
 export async function createFoodVariant(vendorId: string, itemId: string, data: Record<string, unknown>, user: JwtPayload) {
   const vendor = await assertVendorAccess(vendorId, user);
   await findVendorFoodItemOrThrow(vendorId, itemId);
   const markupAmount = extractMarkupAmount(data, vendor, user);
-  const variant = await FoodVariant.create({ ...data, vendorFoodItemId: itemId, markupAmount });
+  assertVariantMrp(data.price, data.mrp);
+  // The name is optional — fall back to the variant type, then the quantity.
+  const name =
+    (typeof data.name === 'string' && data.name.trim()) ||
+    defaultVariantName(data.variantType as string, data.quantityValue as number, data.quantityUnit as string);
+  if (!name) throw ApiError.badRequest('Give the variant a name, a type or a quantity', 'VARIANT_NAME_REQUIRED');
+  const variant = await FoodVariant.create({ ...data, name, vendorFoodItemId: itemId, markupAmount });
   return childItemForViewer(variant.toJSON() as Record<string, unknown>, 'price', user.userType);
 }
 
@@ -200,7 +263,24 @@ export async function updateFoodVariant(
   const markupAmount = extractMarkupAmount(data, vendor, user);
   const update: Record<string, unknown> = { ...data };
   if (hasMarkup) update.markupAmount = markupAmount;
+  // null clears an optional field on the variant.
+  const unset: Record<string, 1> = {};
+  for (const field of ['variantType', 'quantityValue', 'quantityUnit', 'mrp', 'sku']) {
+    if (data[field] === null) {
+      delete update[field];
+      unset[field] = 1;
+    }
+  }
+  if (Object.keys(unset).length) update.$unset = unset;
 
+  if (data.price !== undefined || data.mrp !== undefined) {
+    const existing = await FoodVariant.findOne({ _id: variantId, vendorFoodItemId: itemId });
+    if (existing) {
+      const nextPrice = (data.price as number | undefined) ?? existing.price;
+      const nextMrp = data.mrp === null ? undefined : ((data.mrp as number | undefined) ?? existing.mrp);
+      assertVariantMrp(nextPrice, nextMrp);
+    }
+  }
   const variant = await FoodVariant.findOneAndUpdate({ _id: variantId, vendorFoodItemId: itemId }, update, { new: true });
   if (!variant) throw ApiError.notFound('Food variant not found', 'FOOD_VARIANT_NOT_FOUND');
   return childItemForViewer(variant.toJSON() as Record<string, unknown>, 'price', user.userType);

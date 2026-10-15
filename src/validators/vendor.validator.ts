@@ -4,8 +4,12 @@ import { VENDOR_STATUS, APPROVAL_STATUS, DISCOUNT_TYPES, DAYS_OF_WEEK, PRICING_M
 
 const objectId = z.string().length(24);
 
+const hhmm = z.string().regex(/^([01]?\d|2[0-4]):[0-5]\d$/, 'Use HH:mm');
+
 const businessHoursDaySchema = z.object({
   day: z.enum(Object.values(DAYS_OF_WEEK) as [string, ...string[]]),
+  // Several open windows in one day; the first/last also mirror into openTime/closeTime for older clients.
+  slots: z.array(z.object({ openTime: hhmm, closeTime: hhmm })).max(6).default([]),
   openTime: z.string().optional(),
   closeTime: z.string().optional(),
   isClosed: z.boolean().default(false),
